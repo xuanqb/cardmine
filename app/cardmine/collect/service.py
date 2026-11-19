@@ -57,9 +57,16 @@ def ensure_default_feed(settings: dict) -> None:
         return
     interval = int(settings.get("fetch_interval_minutes") or 60)
     with closing(connect()) as conn, conn:
+        rows = conn.execute("SELECT id, url FROM feed ORDER BY id").fetchall()
+        if len(rows) == 1 and rows[0]["url"] != url:
+            conn.execute(
+                "UPDATE feed SET url = ?, interval_minutes = ? WHERE id = ?",
+                (url, interval, rows[0]["id"]),
+            )
+            return
         conn.execute(
             "INSERT INTO feed(url, name, enabled, interval_minutes) VALUES(?, ?, 1, ?) "
-            "ON CONFLICT(url) DO NOTHING",
+            "ON CONFLICT(url) DO UPDATE SET interval_minutes = excluded.interval_minutes",
             (url, "牛客面经", interval),
         )
 

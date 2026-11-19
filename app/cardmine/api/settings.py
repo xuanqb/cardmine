@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..collect import ensure_default_feed
 from ..db import connect
 
 router = APIRouter(prefix="/api", tags=["settings"])
@@ -80,4 +81,5 @@ def update_settings(payload: SettingsIn) -> dict[str, Any]:
                 ],
             )
 
+    ensure_default_feed(merged)
     return load_settings()
