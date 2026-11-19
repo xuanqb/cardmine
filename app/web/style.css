@@ -513,6 +513,62 @@ button:disabled {
   gap: 2px;
 }
 
+.tree-node {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tree-toggle {
+  display: flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tree-toggle:hover {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.tree-toggle-empty {
+  visibility: hidden;
+  cursor: default;
+}
+
+.tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-node.collapsed > .tree-children {
+  display: none;
+}
+
+.tree-row .tree-item {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
 .tree-item {
   display: flex;
   align-items: center;

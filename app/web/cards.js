@@ -28,9 +28,20 @@ function setActiveTree(button) {
 function buildTree(nodes, depth = 0) {
   const fragment = document.createDocumentFragment();
   for (const node of nodes) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "tree-node";
+
+    const row = document.createElement("div");
+    row.className = "tree-row";
+    row.style.paddingLeft = `${depth * 14}px`;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "tree-toggle";
+
     const button = document.createElement("button");
+    button.type = "button";
     button.className = "tree-item";
-    button.style.paddingLeft = `${10 + depth * 14}px`;
 
     const name = document.createElement("span");
     name.textContent = node.name;
@@ -45,11 +56,37 @@ function buildTree(nodes, depth = 0) {
       setActiveTree(button);
       loadCards();
     });
-    fragment.appendChild(button);
 
-    if (node.children && node.children.length) {
-      fragment.appendChild(buildTree(node.children, depth + 1));
+    const children = node.children || [];
+    if (children.length) {
+      const childBox = document.createElement("div");
+      childBox.className = "tree-children";
+      childBox.appendChild(buildTree(children, depth + 1));
+      wrapper.appendChild(row);
+      wrapper.appendChild(childBox);
+
+      toggle.textContent = "▾";
+      toggle.setAttribute("aria-expanded", "true");
+      toggle.setAttribute("aria-label", `折叠 ${node.name}`);
+      toggle.addEventListener("click", () => {
+        const collapsed = wrapper.classList.toggle("collapsed");
+        toggle.textContent = collapsed ? "▸" : "▾";
+        toggle.setAttribute("aria-expanded", String(!collapsed));
+        toggle.setAttribute(
+          "aria-label",
+          `${collapsed ? "展开" : "折叠"} ${node.name}`,
+        );
+      });
+      row.append(toggle, button);
+    } else {
+      toggle.classList.add("tree-toggle-empty");
+      toggle.tabIndex = -1;
+      toggle.setAttribute("aria-hidden", "true");
+      row.append(toggle, button);
+      wrapper.appendChild(row);
     }
+
+    fragment.appendChild(wrapper);
   }
   return fragment;
 }
