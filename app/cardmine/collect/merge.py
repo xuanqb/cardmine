@@ -182,10 +182,47 @@ def module_scope(conn, module_id: int | None) -> set[int] | None:
     return allowed
 
 
+def _preferred_ai_root(conn) -> sqlite3.Row | None:
+    """选择卡片量最大的非 AI 顶层模块，作为 AI 新建路径的挂载点。"""
+    return conn.execute(
+        """
+        WITH RECURSIVE sub(root_id, id) AS (
+            SELECT id, id FROM module WHERE parent_id IS NULL
+            UNION ALL
+            SELECT sub.root_id, m.id
+            FROM module m JOIN sub ON m.parent_id = sub.id
+        )
+        SELECT m.id, m.name, m.path, COUNT(kp.id) AS cards
+        FROM module m
+        LEFT JOIN sub ON sub.root_id = m.id
+        LEFT JOIN knowledge_point kp ON kp.module_id = sub.id
+        WHERE m.parent_id IS NULL AND m.created_by != 'ai'
+        GROUP BY m.id
+        ORDER BY cards DESC, (m.name = 'Hollis八股文') DESC, m.id
+        LIMIT 1
+        """
+    ).fetchone()
+
+
 def ensure_module(conn, path: str, created_by: str = "ai") -> int | None:
     parts = [part.strip() for part in path.strip("/").split("/") if part.strip()][:3]
     if not parts:
         return None
+
+    if created_by == "ai":
+        root = conn.execute(
+            "SELECT id, name, created_by FROM module WHERE parent_id IS NULL AND name = ?",
+            (parts[0],),
+        ).fetchone()
+        needs_root = root is None or root["created_by"] == "ai" or root["name"] == "Default"
+        if needs_root:
+            preferred = _preferred_ai_root(conn)
+            if preferred and preferred["name"] != "Default" and (
+                root is None or preferred["id"] != root["id"]
+            ):
+                parts = [preferred["path"]] + parts
+                parts = parts[:3]
+
     parent_id = None
     current = ""
     for part in parts:

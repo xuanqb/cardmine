@@ -177,6 +177,8 @@ docker exec cardmine-anki rm -f /data/anki/import.apkg
 
 > Chat 和 Embedding 可以指向不同服务商：例如 Chat 用网关的 `deepseek-*`，Embedding 单独填硅基流动的 `https://api.siliconflow.cn/v1`、对应 Key 与 `BAAI/bge-m3`。只填 Chat、Embedding 留空时，会自动复用 Chat 的地址和密钥。
 
+> AI 新建模块时会优先挂到卡片量最大的现有顶层模块下，不会创建平行顶层分组；应用启动时会自动把已有的 AI 顶层模块归入该分组。
+
 ### 5.2 日常流程
 
 1. **仪表盘**：查看抓取状态、漏抓告警、草稿数、待确认数、同步失败、AI 失败、媒体缺失、Anki 连通。

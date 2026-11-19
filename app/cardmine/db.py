@@ -19,6 +19,70 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _subtree_card_count(conn: sqlite3.Connection, root_id: int) -> int:
+    row = conn.execute(
+        """
+        WITH RECURSIVE sub(id) AS (
+            SELECT id FROM module WHERE id = ?
+            UNION ALL
+            SELECT m.id FROM module m JOIN sub ON m.parent_id = sub.id
+        )
+        SELECT COUNT(*) AS value FROM knowledge_point
+        WHERE module_id IN (SELECT id FROM sub)
+        """,
+        (root_id,),
+    ).fetchone()
+    return int(row["value"])
+
+
+def _normalize_ai_roots(conn: sqlite3.Connection) -> None:
+    """把 AI 创建的顶层模块挂到卡片量最大的非 AI 顶层模块下，避免出现平行分组。"""
+    roots = conn.execute(
+        "SELECT id, name, path, created_by FROM module WHERE parent_id IS NULL"
+    ).fetchall()
+    humans = [row for row in roots if (row["created_by"] or "") != "ai"]
+    ai_roots = [row for row in roots if row["created_by"] == "ai"]
+    if not humans or not ai_roots:
+        return
+
+    target = max(
+        humans,
+        key=lambda row: (
+            _subtree_card_count(conn, row["id"]),
+            row["name"] == "Hollis八股文",
+            -row["id"],
+        ),
+    )
+    if target["name"] == "Default" and _subtree_card_count(conn, target["id"]) == 0:
+        return
+
+    for root in ai_roots:
+        old = root["path"]
+        new = f"{target['path']}/{old}"
+        escaped = new.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        exists = conn.execute(
+            "SELECT 1 FROM module WHERE path = ? OR path LIKE ? ESCAPE '\\'",
+            (new, escaped + "/%"),
+        ).fetchone()
+        if exists is not None:
+            continue
+
+        old_like = old.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conn.execute(
+            "UPDATE module SET path = ? || substr(path, ?) "
+            "WHERE path = ? OR path LIKE ? ESCAPE '\\'",
+            (new, len(old) + 1, old, old_like + "/%"),
+        )
+        sort = conn.execute(
+            "SELECT COALESCE(MAX(sort), 0) + 1 AS value FROM module WHERE parent_id = ?",
+            (target["id"],),
+        ).fetchone()["value"]
+        conn.execute(
+            "UPDATE module SET parent_id = ?, sort = ? WHERE id = ?",
+            (target["id"], sort, root["id"]),
+        )
+
+
 def init_db() -> None:
     """按文件名前缀顺序应用未执行的迁移，版本记录在 PRAGMA user_version。"""
     config.ensure_dirs()
@@ -33,6 +97,8 @@ def init_db() -> None:
             conn.executescript(
                 f"BEGIN;\n{script}\nPRAGMA user_version = {version};\nCOMMIT;"
             )
+        _normalize_ai_roots(conn)
+        conn.commit()
 
 
 def schema_version() -> int:
