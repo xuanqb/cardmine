@@ -151,6 +151,15 @@ body {
 .side-stack {
   display: grid;
   gap: 20px;
+  min-width: 0;
+}
+
+.side-stack > .panel {
+  min-width: 0;
+}
+
+.side-stack .report-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .status-list {
@@ -458,6 +467,13 @@ button:disabled {
   padding-left: 18px;
   max-height: 180px;
   overflow: auto;
+}
+
+.report-detail,
+.report-detail li,
+.report-grid dd,
+.alert {
+  overflow-wrap: anywhere;
 }
 
 .report-detail-title {
