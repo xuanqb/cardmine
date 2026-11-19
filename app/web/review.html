@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cardmine · 审核</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CM</span>
+      <div>
+        <h1>cardmine</h1>
+        <p>面经闪卡管理台</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">仪表盘</a>
+      <a href="/cards">卡片</a>
+      <a href="/posts">面经</a>
+      <a href="/review" class="active">审核</a>
+      <a href="/import">导入</a>
+      <a href="/export">导出</a>
+      <a href="/settings">设置</a>
+    </nav>
+  </header>
+
+  <main class="review-layout">
+    <section class="panel review-panel">
+      <div class="review-head">
+        <h2>待确认重复 <span class="review-count" id="review-count">—</span></h2>
+      </div>
+
+      <div class="list-toolbar">
+        <input type="search" id="search" placeholder="搜索问法…" autocomplete="off">
+        <select id="status-filter">
+          <option value="pending">待确认</option>
+          <option value="kept">保持独立</option>
+          <option value="ignored">已忽略</option>
+          <option value="all">全部</option>
+        </select>
+        <button type="button" class="ghost" id="select-all">全选本页</button>
+        <button type="button" id="batch-merge" disabled>合并所选</button>
+        <button type="button" class="ghost" id="batch-keep" disabled>保持独立</button>
+        <button type="button" class="ghost" id="batch-ignore" disabled>忽略所选</button>
+      </div>
+
+      <div class="candidate-list" id="candidate-list"></div>
+
+      <div class="pager">
+        <button class="ghost" id="prev" disabled>上一页</button>
+        <span class="pager-info" id="page-info">—</span>
+        <button class="ghost" id="next" disabled>下一页</button>
+      </div>
+    </section>
+
+    <aside class="side-stack review-side">
+      <section class="panel">
+        <h2>全库语义扫描</h2>
+        <p class="hint">
+          对全部卡片两两向量比对，再用 AI 复核相似问法。确认重复的对会进入左侧队列，
+          可逐条或批量合并。扫描会消耗 AI 调用额度。
+        </p>
+        <div class="sync-actions">
+          <button type="button" id="scan-run">开始扫描</button>
+        </div>
+        <div class="progress-wrap" id="scan-progress" hidden>
+          <div class="progress-head">
+            <span id="scan-phase">—</span>
+            <span id="scan-count"></span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="scan-fill"></div>
+          </div>
+        </div>
+        <p class="hint" id="scan-summary" hidden></p>
+      </section>
+
+      <section class="panel">
+        <h2>操作记录</h2>
+        <p class="hint">合并、忽略与保持独立的操作均可撤销，撤销会恢复卡片与问法变体。</p>
+        <ul class="action-list" id="action-list"></ul>
+      </section>
+    </aside>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/review.js"></script>
+</body>
+</html>

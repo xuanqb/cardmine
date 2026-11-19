@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cardmine · 面经</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CM</span>
+      <div>
+        <h1>cardmine</h1>
+        <p>面经闪卡管理台</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">仪表盘</a>
+      <a href="/cards">卡片</a>
+      <a href="/posts" class="active">面经</a>
+      <a href="/review">审核</a>
+      <a href="/import">导入</a>
+      <a href="/export">导出</a>
+      <a href="/settings">设置</a>
+    </nav>
+  </header>
+
+  <main class="posts-layout">
+    <section class="panel">
+      <div class="list-toolbar">
+        <input type="search" id="search" placeholder="搜索标题…" autocomplete="off">
+        <select id="feed-filter">
+          <option value="">全部来源</option>
+        </select>
+        <select id="ai-filter">
+          <option value="">全部状态</option>
+          <option value="done">已切题</option>
+          <option value="pending">待处理</option>
+          <option value="failed">失败</option>
+        </select>
+        <button id="fetch-run">立即抓取</button>
+      </div>
+
+      <div class="progress-wrap" id="fetch-progress" hidden>
+        <div class="progress-head">
+          <span id="fetch-phase">—</span>
+          <span id="fetch-count"></span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="fetch-fill"></div>
+        </div>
+      </div>
+
+      <p class="hint" id="fetch-summary" hidden></p>
+
+      <div class="post-list" id="post-list"></div>
+
+      <div class="pager">
+        <button class="ghost" id="prev" disabled>上一页</button>
+        <span class="pager-info" id="page-info">—</span>
+        <button class="ghost" id="next" disabled>下一页</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/posts.js"></script>
+</body>
+</html>

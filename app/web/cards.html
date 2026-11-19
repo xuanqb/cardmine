@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cardmine · 卡片</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CM</span>
+      <div>
+        <h1>cardmine</h1>
+        <p>面经闪卡管理台</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">仪表盘</a>
+      <a href="/cards" class="active">卡片</a>
+      <a href="/posts">面经</a>
+      <a href="/review">审核</a>
+      <a href="/import">导入</a>
+      <a href="/export">导出</a>
+      <a href="/settings">设置</a>
+    </nav>
+  </header>
+
+  <main class="cards-layout">
+    <aside class="panel tree-panel">
+      <h2>目录</h2>
+      <button class="tree-item tree-all active" id="tree-all">
+        <span>全部卡片</span>
+      </button>
+      <div class="module-tree" id="module-tree"></div>
+    </aside>
+
+    <section class="panel list-panel">
+      <div class="list-toolbar">
+        <input type="search" id="search" placeholder="搜索正面或背面…" autocomplete="off">
+        <select id="status-filter">
+          <option value="">全部状态</option>
+          <option value="draft">草稿</option>
+          <option value="ready">已整理</option>
+          <option value="archived">已归档</option>
+        </select>
+        <select id="sort">
+          <option value="updated_desc">按更新时间</option>
+          <option value="mentions_desc">按出现次数</option>
+          <option value="recent_desc">按最近出现</option>
+        </select>
+      </div>
+
+      <div class="card-list" id="card-list"></div>
+
+      <div class="pager">
+        <button class="ghost" id="prev" disabled>上一页</button>
+        <span class="pager-info" id="page-info">—</span>
+        <button class="ghost" id="next" disabled>下一页</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/cards.js"></script>
+</body>
+</html>

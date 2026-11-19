@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cardmine · 导出与备份</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CM</span>
+      <div>
+        <h1>cardmine</h1>
+        <p>面经闪卡管理台</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">仪表盘</a>
+      <a href="/cards">卡片</a>
+      <a href="/posts">面经</a>
+      <a href="/review">审核</a>
+      <a href="/import">导入</a>
+      <a href="/export" class="active">导出</a>
+      <a href="/settings">设置</a>
+    </nav>
+  </header>
+
+  <main class="layout single export-layout">
+    <section class="panel">
+      <h2>导出卡片</h2>
+      <p class="hint">
+        apkg 复用 Basic 模型与 Markdown 渲染脚本，包含卡片引用的图片与
+        <code>markdown-it.min.js</code>、<code>highlight.min.js</code>；
+        CSV 便于人工检查，列为 Front、Back、Deck。
+      </p>
+
+      <div class="field-row export-filters">
+        <label class="field">
+          <span>模块</span>
+          <select id="module-select">
+            <option value="">全部模块</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>状态</span>
+          <select id="status-select">
+            <option value="">全部状态</option>
+            <option value="ready">已整理</option>
+            <option value="draft">草稿</option>
+            <option value="archived">已归档</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="sync-actions export-actions">
+        <button type="button" id="export-apkg">导出 apkg</button>
+        <button type="button" class="ghost" id="export-csv">导出 CSV</button>
+      </div>
+      <p class="hint" id="export-hint" hidden></p>
+    </section>
+
+    <section class="panel">
+      <h2>数据备份</h2>
+      <p class="hint">
+        数据库使用 SQLite 在线备份生成一致性快照（包含 WAL 中已提交的数据）；
+        媒体清单记录文件名、大小、哈希与本地是否存在。
+      </p>
+      <div class="sync-actions export-actions">
+        <button type="button" class="ghost" id="backup-db">下载 SQLite 备份</button>
+        <button type="button" class="ghost" id="backup-media">下载媒体清单</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Anki 同步概况</h2>
+        <a class="button-link" href="/settings">同步操作</a>
+      </div>
+      <div class="sync-state" id="anki-state">
+        <span class="status-dot"></span>
+        <span id="anki-text">检测中…</span>
+      </div>
+      <dl class="status-list">
+        <div><dt>容器地址</dt><dd id="anki-url">—</dd></div>
+        <div><dt>待推送</dt><dd id="anki-pending">—</dd></div>
+        <div><dt>同步失败</dt><dd id="anki-failed">—</dd></div>
+        <div><dt>最近推送</dt><dd id="anki-last-push">—</dd></div>
+      </dl>
+      <div class="alert" id="anki-error" hidden></div>
+      <p class="hint">
+        导出 apkg 可在容器异常时手动导入 Anki 兜底；推送与 AnkiWeb 同步在设置页操作。
+      </p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>最近同步失败</h2>
+        <span class="panel-note" id="sync-log-note">—</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>卡片</th>
+              <th>Deck</th>
+              <th>时间</th>
+              <th>错误</th>
+            </tr>
+          </thead>
+          <tbody id="sync-log-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/export.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cardmine · 导入</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CM</span>
+      <div>
+        <h1>cardmine</h1>
+        <p>面经闪卡管理台</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">仪表盘</a>
+      <a href="/cards">卡片</a>
+      <a href="/posts">面经</a>
+      <a href="/review">审核</a>
+      <a href="/import" class="active">导入</a>
+      <a href="/export">导出</a>
+      <a href="/settings">设置</a>
+    </nav>
+  </header>
+
+  <main class="layout single">
+    <section class="panel">
+      <h2>导入 apkg</h2>
+      <p class="hint">
+        支持 .apkg / .colpkg。按正面文本幂等导入：重复导入不会产生重复卡片；
+        已有卡片背面为空时，会用导入内容补全。媒体文件会一并落盘。
+      </p>
+
+      <form id="import-form" class="import-form">
+        <input type="file" id="file" accept=".apkg,.colpkg" required>
+        <button type="submit" id="upload-button">开始导入</button>
+      </form>
+
+      <div class="progress-wrap" id="progress-wrap" hidden>
+        <div class="progress-head">
+          <span id="phase">准备中</span>
+          <span id="progress-text"></span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+      </div>
+
+      <div class="alert" id="error" hidden></div>
+
+      <div class="report" id="report" hidden>
+        <h3>导入报告</h3>
+        <dl class="report-grid">
+          <div><dt>卡片总数</dt><dd id="r-total">0</dd></div>
+          <div><dt>新增卡片</dt><dd id="r-new">0</dd></div>
+          <div><dt>补全背面</dt><dd id="r-filled">0</dd></div>
+          <div><dt>已存在跳过</dt><dd id="r-skipped">0</dd></div>
+          <div><dt>模块数</dt><dd id="r-modules">0</dd></div>
+          <div><dt>媒体文件</dt><dd id="r-media">0</dd></div>
+          <div><dt>耗时</dt><dd id="r-elapsed">—</dd></div>
+        </dl>
+        <div class="report-detail" id="missing" hidden></div>
+        <div class="report-detail" id="skipped-models" hidden></div>
+        <div class="report-detail" id="errors" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/import.js"></script>
+</body>
+</html>

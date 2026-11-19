@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cardmine · 仪表盘</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CM</span>
+      <div>
+        <h1>cardmine</h1>
+        <p>面经闪卡管理台</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/" class="active">仪表盘</a>
+      <a href="/cards">卡片</a>
+      <a href="/posts">面经</a>
+      <a href="/review">审核</a>
+      <a href="/import">导入</a>
+      <a href="/export">导出</a>
+      <a href="/settings">设置</a>
+    </nav>
+    <div class="status" id="health">
+      <span class="status-dot" id="health-dot"></span>
+      <span id="health-text">连接中…</span>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <section class="panel alerts-panel">
+      <div class="panel-head">
+        <h2>告警与提醒</h2>
+        <button type="button" class="ghost" id="refresh">刷新</button>
+      </div>
+      <ul class="alert-list" id="alert-list"></ul>
+    </section>
+
+    <section class="stat-grid">
+      <article class="stat-card">
+        <span class="stat-label">草稿卡片</span>
+        <strong id="stat-draft">—</strong>
+        <span class="stat-note">背面待补充</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">待确认重复</span>
+        <strong id="stat-dup">—</strong>
+        <span class="stat-note">审核队列</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">同步失败</span>
+        <strong id="stat-sync-failed">—</strong>
+        <span class="stat-note">最近推送失败卡数</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">AI 失败面经</span>
+        <strong id="stat-ai-failed">—</strong>
+        <span class="stat-note">切题失败的待重试文章</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">媒体缺失</span>
+        <strong id="stat-media-missing">—</strong>
+        <span class="stat-note">被引用但本地不存在</span>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Anki 容器</span>
+        <strong id="stat-anki">—</strong>
+        <span class="stat-note" id="stat-anki-note">检测中</span>
+      </article>
+    </section>
+
+    <div class="dashboard-columns">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>抓取状态</h2>
+          <span class="panel-note" id="fetch-summary">—</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>来源</th>
+                <th>最近抓取</th>
+                <th>间隔</th>
+                <th>最新结果</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody id="feed-rows"></tbody>
+          </table>
+        </div>
+
+        <h3 class="section-title">最近抓取记录</h3>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>开始时间</th>
+                <th>来源</th>
+                <th>条目</th>
+                <th>耗时</th>
+                <th>结果</th>
+              </tr>
+            </thead>
+            <tbody id="log-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="side-stack">
+        <section class="panel">
+          <h2>Anki 同步</h2>
+          <div class="sync-state" id="anki-state">
+            <span class="status-dot"></span>
+            <span id="anki-text">检测中…</span>
+          </div>
+          <dl class="status-list">
+            <div><dt>待推送</dt><dd id="anki-pending">—</dd></div>
+            <div><dt>最近推送</dt><dd id="anki-last-push">—</dd></div>
+            <div><dt>容器地址</dt><dd id="anki-url">—</dd></div>
+          </dl>
+          <div class="sync-actions">
+            <a class="button-link" href="/settings">打开同步设置</a>
+            <a class="button-link" href="/export">导出兜底</a>
+          </div>
+          <div class="alert" id="anki-error" hidden></div>
+        </section>
+
+        <section class="panel">
+          <h2>卡片概况</h2>
+          <dl class="status-list">
+            <div><dt>卡片总数</dt><dd id="cards-total">—</dd></div>
+            <div><dt>已整理</dt><dd id="cards-ready">—</dd></div>
+            <div><dt>已归档</dt><dd id="cards-archived">—</dd></div>
+            <div><dt>已匹配 Anki</dt><dd id="cards-matched">—</dd></div>
+          </dl>
+        </section>
+
+        <section class="panel">
+          <h2>快捷操作</h2>
+          <div class="sync-actions">
+            <button type="button" id="fetch-run">立即抓取</button>
+            <a class="button-link" href="/import">导入 apkg</a>
+            <a class="button-link" href="/review">处理待确认</a>
+          </div>
+          <p class="hint" id="fetch-hint" hidden></p>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

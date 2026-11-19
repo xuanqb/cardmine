@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cardmine · 卡片编辑</title>
+  <link rel="stylesheet" href="/static/vendor/codemirror.min.css">
+  <link rel="stylesheet" href="/static/vendor/highlight-github.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CM</span>
+      <div>
+        <h1>cardmine</h1>
+        <p>面经闪卡管理台</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">仪表盘</a>
+      <a href="/cards" class="active">卡片</a>
+      <a href="/posts">面经</a>
+      <a href="/review">审核</a>
+      <a href="/import">导入</a>
+      <a href="/export">导出</a>
+      <a href="/settings">设置</a>
+    </nav>
+  </header>
+
+  <main class="editor-layout">
+    <aside class="panel info-panel">
+      <div class="info-head">
+        <h2>卡片信息</h2>
+        <span class="badge" id="status-badge">—</span>
+      </div>
+
+      <div class="field">
+        <span>状态</span>
+        <select id="status-select">
+          <option value="draft">草稿</option>
+          <option value="ready">已整理</option>
+          <option value="archived">已归档</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <span>模块</span>
+        <select id="module-select"></select>
+      </div>
+
+      <dl class="status-list card-facts">
+        <div><dt>出现次数</dt><dd id="fact-mentions">—</dd></div>
+        <div><dt>最近出现</dt><dd id="fact-last">—</dd></div>
+        <div><dt>创建时间</dt><dd id="fact-created">—</dd></div>
+        <div><dt>更新时间</dt><dd id="fact-updated">—</dd></div>
+      </dl>
+
+      <section class="info-section">
+        <h3>正面（当前）</h3>
+        <p class="front-view" id="front-view"></p>
+      </section>
+
+      <section class="info-section">
+        <h3>问法变体</h3>
+        <ul class="variant-list" id="variant-list"></ul>
+      </section>
+
+      <section class="info-section">
+        <h3>来源面经</h3>
+        <ul class="source-list" id="source-list"></ul>
+      </section>
+    </aside>
+
+    <section class="panel editor-panel">
+      <div class="editor-head">
+        <label class="field front-field">
+          <span>正面</span>
+          <input type="text" id="front-input" autocomplete="off">
+        </label>
+        <div class="editor-actions">
+          <a href="/cards" class="button-link">返回列表</a>
+          <button type="button" id="save-button">保存</button>
+        </div>
+      </div>
+
+      <div class="editor-split">
+        <div class="editor-pane">
+          <div class="pane-title">Markdown 背面</div>
+          <textarea id="back-input"></textarea>
+        </div>
+        <div class="preview-pane">
+          <div class="pane-title">预览</div>
+          <div class="markdown-body" id="preview"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/vendor/codemirror.min.js"></script>
+  <script src="/static/vendor/mode/xml.min.js"></script>
+  <script src="/static/vendor/mode/markdown.min.js"></script>
+  <script src="/static/vendor/mode/javascript.min.js"></script>
+  <script src="/static/vendor/mode/css.min.js"></script>
+  <script src="/static/vendor/mode/clike.min.js"></script>
+  <script src="/static/vendor/continuelist.min.js"></script>
+  <script src="/static/vendor/markdown-it.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/common.js"></script>
+  <script src="/static/card.js"></script>
+</body>
+</html>

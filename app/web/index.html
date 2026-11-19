@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cardmine · 设置</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CM</span>
+      <div>
+        <h1>cardmine</h1>
+        <p>面经闪卡管理台</p>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">仪表盘</a>
+      <a href="/cards">卡片</a>
+      <a href="/posts">面经</a>
+      <a href="/review">审核</a>
+      <a href="/import">导入</a>
+      <a href="/export">导出</a>
+      <a href="/settings" class="active">设置</a>
+    </nav>
+    <div class="status" id="health">
+      <span class="status-dot" id="health-dot"></span>
+      <span id="health-text">连接中…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div class="side-stack">
+      <section class="panel status-panel">
+        <h2>运行状态</h2>
+        <dl class="status-list">
+          <div><dt>应用版本</dt><dd id="app-version">—</dd></div>
+          <div><dt>数据库</dt><dd id="db-status">—</dd></div>
+          <div><dt>Schema 版本</dt><dd id="schema-version">—</dd></div>
+          <div><dt>Anki 容器</dt><dd id="anki-url">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel sync-panel">
+        <h2>Anki 同步</h2>
+        <div class="sync-state">
+          <span class="status-dot" id="anki-dot"></span>
+          <span id="anki-state">检测中…</span>
+        </div>
+        <dl class="status-list">
+          <div><dt>待推送</dt><dd id="anki-pending">—</dd></div>
+          <div><dt>已匹配笔记</dt><dd id="anki-matched">—</dd></div>
+          <div><dt>最近推送</dt><dd id="anki-last-push">—</dd></div>
+          <div><dt>最近备份</dt><dd id="anki-backup">—</dd></div>
+        </dl>
+        <div class="sync-actions">
+          <button type="button" class="ghost" id="anki-check">检测连接</button>
+          <button type="button" class="ghost" id="anki-takeover">接管匹配</button>
+          <button type="button" id="anki-push">立即推送</button>
+          <button type="button" class="ghost" id="anki-sync">同步 AnkiWeb</button>
+        </div>
+        <div class="progress-wrap" id="anki-progress" hidden>
+          <div class="progress-head">
+            <span id="anki-phase">—</span>
+            <span id="anki-count"></span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="anki-fill"></div>
+          </div>
+        </div>
+        <div class="alert" id="anki-alert" hidden></div>
+        <div class="report" id="anki-report" hidden></div>
+      </section>
+
+      <section class="panel">
+        <h2>数据备份</h2>
+        <p class="hint">
+          下载 SQLite 一致性快照与媒体清单。媒体清单包含文件名、大小、哈希与本地是否存在。
+        </p>
+        <div class="sync-actions">
+          <a class="button-link" href="/api/export/backup/db">下载 SQLite</a>
+          <a class="button-link" href="/api/export/backup/media">媒体清单</a>
+        </div>
+      </section>
+    </div>
+
+    <form class="panel settings-panel" id="settings-form">
+      <h2>设置</h2>
+
+      <fieldset>
+        <legend>采集</legend>
+        <label class="field">
+          <span>RSS 源</span>
+          <input type="text" name="rss_url" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>抓取间隔（分钟）</span>
+          <input type="number" name="fetch_interval_minutes" min="5" step="1">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>AI</legend>
+        <label class="field">
+          <span>Base URL</span>
+          <input type="text" name="ai_base_url" autocomplete="off" placeholder="https://api.example.com/v1">
+        </label>
+        <label class="field">
+          <span>API Key</span>
+          <input type="password" name="ai_api_key" autocomplete="off">
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>Chat 模型</span>
+            <input type="text" name="ai_chat_model" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Embedding 模型</span>
+            <input type="text" name="ai_embedding_model" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>向量维度</span>
+            <input type="number" name="ai_embedding_dim" min="1" step="1">
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>去重阈值</legend>
+        <div class="field-row">
+          <label class="field">
+            <span>高阈值（直接归并）</span>
+            <input type="number" name="dup_high_threshold" min="0" max="1" step="0.01">
+          </label>
+          <label class="field">
+            <span>低阈值（进入待确认）</span>
+            <input type="number" name="dup_low_threshold" min="0" max="1" step="0.01">
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Anki</legend>
+        <label class="field">
+          <span>容器地址</span>
+          <input type="text" name="anki_url" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>模型名</span>
+          <input type="text" name="anki_model" autocomplete="off">
+        </label>
+        <div class="field-row">
+          <label class="checkbox">
+            <input type="checkbox" name="anki_sync_enabled">
+            <span>推送后自动同步 AnkiWeb</span>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" name="anki_conflict_guard">
+            <span>全量同步冲突保护</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" id="save-button">保存设置</button>
+        <span class="save-hint" id="save-hint"></span>
+      </div>
+    </form>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

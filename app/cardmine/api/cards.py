@@ -1,0 +1,228 @@
+import sqlite3
+from contextlib import closing
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from ..db import connect, utc_now
+from ..importer.textfmt import normalize_front
+
+router = APIRouter(prefix="/api", tags=["cards"])
+
+SORTS = {
+    "updated_desc": "kp.updated_at DESC, kp.id DESC",
+    "mentions_desc": "mention_count DESC, kp.updated_at DESC",
+    "recent_desc": "(last_mention_at IS NULL), last_mention_at DESC, kp.updated_at DESC",
+}
+STATUSES = {"draft", "ready", "archived"}
+
+
+def _like_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _module_ids(conn, module_id: int) -> list[int]:
+    """返回该模块及其所有子模块的 id。"""
+    row = conn.execute("SELECT path FROM module WHERE id = ?", (module_id,)).fetchone()
+    if row is None:
+        return []
+    path = row["path"]
+    rows = conn.execute(
+        "SELECT id FROM module WHERE path = ? OR path LIKE ? ESCAPE '\\'",
+        (path, _like_escape(path) + "/%"),
+    ).fetchall()
+    return [item["id"] for item in rows]
+
+
+@router.get("/cards")
+def list_cards(
+    module_id: int | None = None,
+    status: str | None = None,
+    q: str | None = None,
+    sort: str = "updated_desc",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> dict:
+    if sort not in SORTS:
+        raise HTTPException(status_code=400, detail="不支持的排序方式")
+    if status is not None and status not in STATUSES:
+        raise HTTPException(status_code=400, detail="不支持的状态")
+
+    where: list[str] = []
+    params: list = []
+
+    with closing(connect()) as conn:
+        if module_id is not None:
+            ids = _module_ids(conn, module_id)
+            if not ids:
+                return {"items": [], "total": 0, "page": page, "page_size": page_size}
+            placeholders = ",".join("?" for _ in ids)
+            where.append(f"kp.module_id IN ({placeholders})")
+            params.extend(ids)
+
+        if status is not None:
+            where.append("kp.status = ?")
+            params.append(status)
+
+        if q and q.strip():
+            pattern = f"%{_like_escape(q.strip())}%"
+            where.append(
+                "(kp.front_md LIKE ? ESCAPE '\\' OR kp.back_md LIKE ? ESCAPE '\\')"
+            )
+            params.extend([pattern, pattern])
+
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM knowledge_point kp {clause}", params
+        ).fetchone()[0]
+
+        rows = conn.execute(
+            f"""
+            SELECT kp.id, kp.front_md, kp.status, kp.updated_at,
+                   m.path AS module_path,
+                   (SELECT COUNT(*) FROM mention me WHERE me.kp_id = kp.id) AS mention_count,
+                   (SELECT MAX(me.created_at) FROM mention me WHERE me.kp_id = kp.id)
+                       AS last_mention_at
+            FROM knowledge_point kp
+            LEFT JOIN module m ON m.id = kp.module_id
+            {clause}
+            ORDER BY {SORTS[sort]}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+
+    return {
+        "items": [dict(row) for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
+    row = conn.execute(
+        """
+        SELECT kp.*, m.path AS module_path
+        FROM knowledge_point kp
+        LEFT JOIN module m ON m.id = kp.module_id
+        WHERE kp.id = ?
+        """,
+        (card_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="卡片不存在")
+
+    variants = conn.execute(
+        """
+        SELECT me.id, me.raw_text, me.section, me.status AS mention_status,
+               me.created_at, p.id AS post_id, p.title AS post_title,
+               p.url AS post_url, p.fetched_at
+        FROM mention me
+        JOIN post p ON p.id = me.post_id
+        WHERE me.kp_id = ?
+        ORDER BY me.created_at DESC, me.id DESC
+        """,
+        (card_id,),
+    ).fetchall()
+
+    sources = conn.execute(
+        """
+        SELECT DISTINCT p.id, p.title, p.url, p.fetched_at
+        FROM mention me
+        JOIN post p ON p.id = me.post_id
+        WHERE me.kp_id = ?
+        ORDER BY p.fetched_at DESC
+        """,
+        (card_id,),
+    ).fetchall()
+
+    detail = dict(row)
+    detail["mention_count"] = len(variants)
+    detail["last_mention_at"] = variants[0]["created_at"] if variants else None
+    detail["variants"] = [dict(item) for item in variants]
+    detail["sources"] = [dict(item) for item in sources]
+    return detail
+
+
+@router.get("/cards/{card_id}")
+def get_card(card_id: int) -> dict:
+    with closing(connect()) as conn:
+        return _fetch_detail(conn, card_id)
+
+
+class CardUpdate(BaseModel):
+    front_md: str | None = None
+    back_md: str | None = None
+    module_id: int | None = Field(None, ge=1)
+    status: str | None = None
+
+
+@router.patch("/cards/{card_id}")
+def update_card(card_id: int, payload: CardUpdate) -> dict:
+    updates = payload.model_dump(exclude_unset=True)
+
+    with closing(connect()) as conn, conn:
+        current = conn.execute(
+            "SELECT id, status, back_md FROM knowledge_point WHERE id = ?", (card_id,)
+        ).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="卡片不存在")
+
+        fields: list[str] = []
+        params: list = []
+
+        if "front_md" in updates:
+            front_md = (updates["front_md"] or "").strip()
+            if not normalize_front(front_md):
+                raise HTTPException(status_code=400, detail="正面不能为空")
+            front_norm = normalize_front(front_md)
+            collision = conn.execute(
+                "SELECT id FROM knowledge_point WHERE front_norm = ? AND id != ?",
+                (front_norm, card_id),
+            ).fetchone()
+            if collision:
+                raise HTTPException(
+                    status_code=409, detail="该问法已存在，请使用合并功能"
+                )
+            fields.extend(["front_md = ?", "front_norm = ?"])
+            params.extend([front_md, front_norm])
+
+        if "back_md" in updates:
+            fields.append("back_md = ?")
+            params.append(updates["back_md"] or "")
+
+        if "module_id" in updates:
+            exists = conn.execute(
+                "SELECT 1 FROM module WHERE id = ?", (updates["module_id"],)
+            ).fetchone()
+            if exists is None:
+                raise HTTPException(status_code=400, detail="模块不存在")
+            fields.append("module_id = ?")
+            params.append(updates["module_id"])
+
+        if "status" in updates:
+            status = updates["status"]
+            if status not in STATUSES:
+                raise HTTPException(status_code=400, detail="不支持的状态")
+            fields.append("status = ?")
+            params.append(status)
+        else:
+            new_back = updates.get("back_md")
+            if (
+                new_back is not None
+                and new_back.strip()
+                and current["status"] == "draft"
+            ):
+                fields.append("status = 'ready'")
+
+        if fields:
+            fields.append("updated_at = ?")
+            params.append(utc_now())
+            params.append(card_id)
+            conn.execute(
+                f"UPDATE knowledge_point SET {', '.join(fields)} WHERE id = ?", params
+            )
+
+        return _fetch_detail(conn, card_id)

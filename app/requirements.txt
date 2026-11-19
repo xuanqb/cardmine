@@ -1,0 +1,5 @@
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+sqlite-vec==0.1.9
+zstandard==0.24.0
+python-multipart==0.0.20
