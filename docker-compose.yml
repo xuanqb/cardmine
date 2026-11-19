@@ -11,11 +11,11 @@ services:
     environment:
       CARDMINE_DATA_DIR: /data
       ANKI_CONNECT_URL: http://anki-connect-server:8765/api
-      # 同步前备份 Anki 集合与媒体，只读访问容器数据目录
+      # 同步前备份 Anki 集合与媒体，读取容器数据目录（备份为文件复制，不打开集合）
       ANKI_DATA_DIR: /anki-data
     volumes:
       - "${APP_DATA_PATH:-./data/app}:/data"
-      - "${ANKI_DATA_PATH:-./data/anki}:/anki-data:ro"
+      - "${ANKI_DATA_PATH:-./data/anki}:/anki-data"
     depends_on:
       - anki-connect-server
 
@@ -26,10 +26,13 @@ services:
     environment:
       ANKICONNECT_COLLECTION_PATH: /data/anki/collection.anki2
       ANKICONNECT_PORT: "8765"
-      # 容器内必须监听 0.0.0.0，主应用才能跨容器访问；不映射宿主机端口
+      # 容器内必须监听 0.0.0.0，主应用才能跨容器访问
       ANKICONNECT_BIND: 0.0.0.0
       ANKICONNECT_ANKIWEB_USER: ${ANKIWEB_USER:-}
       ANKICONNECT_ANKIWEB_PASS: ${ANKIWEB_PASS:-}
       ANKICONNECT_FAIL_ON_FULL_SYNC_CONFLICT: ${ANKI_FAIL_ON_FULL_SYNC_CONFLICT:-false}
+    # 无鉴权，仅限可信局域网；不要暴露到公网
+    ports:
+      - "${ANKI_PORT:-8765}:8765"
     volumes:
       - "${ANKI_DATA_PATH:-./data/anki}:/data/anki"

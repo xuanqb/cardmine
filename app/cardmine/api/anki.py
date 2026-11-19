@@ -19,8 +19,24 @@ _ACTIVE = ("queued", "running")
 def _set(job_id: str, **fields) -> None:
     with _lock:
         job = _jobs.get(job_id)
-        if job is not None:
-            job.update(fields)
+        if job is None or job.get("cancelled"):
+            return
+        job.update(fields)
+        job["updated_at"] = utc_now()
+
+
+def _fail_job(job_id: str, reason: str) -> None:
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None or job["status"] not in _ACTIVE:
+            return
+        job.update(
+            status="failed",
+            error=reason,
+            cancelled=True,
+            finished_at=utc_now(),
+            updated_at=utc_now(),
+        )
 
 
 def _run_job(job_id: str, action: str, settings: dict) -> None:
@@ -28,6 +44,17 @@ def _run_job(job_id: str, action: str, settings: dict) -> None:
         _set(job_id, phase=phase, processed=done, total=total)
 
     _set(job_id, status="running", started_at=utc_now())
+    timer = threading.Timer(
+        config.ANKI_JOB_TIMEOUT_SECONDS,
+        _fail_job,
+        args=(
+            job_id,
+            f"任务超过 {config.ANKI_JOB_TIMEOUT_SECONDS} 秒未完成，已标记失败",
+        ),
+    )
+    timer.daemon = True
+    timer.start()
+
     client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
     try:
         if action == "takeover":
@@ -49,6 +76,8 @@ def _run_job(job_id: str, action: str, settings: dict) -> None:
         _set(job_id, status="done", result=result, finished_at=utc_now())
     except Exception as exc:
         _set(job_id, status="failed", error=str(exc), finished_at=utc_now())
+    finally:
+        timer.cancel()
 
 
 def _start(action: str) -> dict:
@@ -74,8 +103,10 @@ def _start(action: str) -> dict:
             "result": None,
             "error": None,
             "created_at": utc_now(),
+            "updated_at": utc_now(),
             "started_at": None,
             "finished_at": None,
+            "cancelled": False,
         }
 
     settings = load_settings()
@@ -192,4 +223,21 @@ def get_job(job_id: str) -> dict:
         job = _jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="同步任务不存在")
+        return dict(job)
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict:
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="同步任务不存在")
+        if job["status"] in _ACTIVE:
+            job.update(
+                status="failed",
+                error="用户取消",
+                cancelled=True,
+                finished_at=utc_now(),
+                updated_at=utc_now(),
+            )
         return dict(job)

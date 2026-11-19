@@ -1,9 +1,7 @@
-"""同步前备份 Anki 集合与媒体，使用 SQLite 在线备份与媒体硬链接快照。"""
+"""同步前备份 Anki 集合与媒体，使用文件快照与媒体硬链接快照。"""
 
 import os
 import shutil
-import sqlite3
-from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -11,18 +9,22 @@ from .. import config
 
 
 def _backup_collection_file(source: Path, dest: Path) -> None:
-    try:
-        with closing(
-            sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=30)
-        ) as src, closing(sqlite3.connect(dest)) as out:
-            src.backup(out)
-    except sqlite3.Error:
-        # WAL 只读恢复失败时退化为文件复制（连同 -wal/-shm）
-        shutil.copy2(source, dest)
-        for suffix in ("-wal", "-shm"):
-            sidecar = source.with_name(source.name + suffix)
-            if sidecar.exists():
-                shutil.copy2(sidecar, dest.with_name(dest.name + suffix))
+    """按文件复制集合主库与 WAL/SHM 边车。
+
+    Anki 后端以 EXCLUSIVE 锁持有集合，外部 SQLite 连接即使成功，
+    Connection.backup() 也可能无限期阻塞且不抛出异常，因此不做在线备份。
+    三个文件必须一起复制，单独复制主库会丢失尚未 checkpoint 的数据。
+    """
+    shutil.copy2(source, dest)
+    for suffix in ("-wal", "-shm"):
+        sidecar = source.with_name(source.name + suffix)
+        if not sidecar.exists():
+            continue
+        try:
+            shutil.copy2(sidecar, dest.with_name(dest.name + suffix))
+        except FileNotFoundError:
+            # 备份期间 Anki 可能轮换/删除边车文件
+            continue
 
 
 def _snapshot_media(source: Path, dest: Path) -> int:
@@ -33,9 +35,13 @@ def _snapshot_media(source: Path, dest: Path) -> int:
             continue
         target = dest / item.name
         try:
-            os.link(item, target)
-        except OSError:
-            shutil.copy2(item, target)
+            try:
+                os.link(item, target)
+            except OSError:
+                shutil.copy2(item, target)
+        except FileNotFoundError:
+            # 备份期间 Anki 可能删除或替换媒体文件
+            continue
         count += 1
     return count
 
@@ -49,14 +55,20 @@ def backup_anki(keep: int = 7) -> dict:
     dest = config.BACKUP_DIR / stamp
     dest.mkdir(parents=True, exist_ok=True)
 
-    _backup_collection_file(source, dest / "collection.anki2")
+    try:
+        _backup_collection_file(source, dest / "collection.anki2")
+        if (dest / "collection.anki2").stat().st_size == 0:
+            raise RuntimeError("Anki 集合备份为空，已中止同步")
 
-    media_source = source.parent / "collection.media"
-    media_count = (
-        _snapshot_media(media_source, dest / "collection.media")
-        if media_source.exists()
-        else 0
-    )
+        media_source = source.parent / "collection.media"
+        media_count = (
+            _snapshot_media(media_source, dest / "collection.media")
+            if media_source.exists()
+            else 0
+        )
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
 
     backups = sorted(
         (path for path in config.BACKUP_DIR.iterdir() if path.is_dir()),

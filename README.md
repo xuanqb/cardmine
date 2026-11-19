@@ -38,9 +38,10 @@
 
 1. 安装 Docker 与 Docker Compose v2（`docker compose version` 可用）。
 2. 准备两个 **NAS 本地磁盘目录**，不要使用 SMB/NFS：
-   - 主应用数据目录，例如 `/volume1/docker/cardmine/app`
-   - Anki 数据目录，例如 `/volume1/docker/cardmine/anki`
-3. 准备一个局域网端口，例如 `8080`。
+   - 主应用数据目录，例如 fnOS `/vol1/1000/docker/cardmine/app`、群晖 `/volume1/docker/cardmine/app`
+   - Anki 数据目录，例如 fnOS `/vol1/1000/docker/cardmine/anki`
+   - 不同 NAS 的 Docker 根目录不同，按实际路径替换，不要照抄示例
+3. 准备局域网端口：主应用 `8080`、AnkiConnect `8765`（均可通过 `.env` 修改）。
 4. 如需与手机/桌面 Anki 同步，准备 AnkiWeb 账号密码。
 5. 如 AnkiWeb 上没有现成集合，准备已有的 `.apkg` 文件。
 
@@ -61,11 +62,12 @@ cp .env.example .env
 ANKIWEB_USER=你的邮箱
 ANKIWEB_PASS=你的密码
 
-# 必须使用 NAS 本地磁盘的绝对路径
-APP_DATA_PATH=/volume1/docker/cardmine/app
-ANKI_DATA_PATH=/volume1/docker/cardmine/anki
+# 必须使用 NAS 本地磁盘的绝对路径，按实际 Docker 根目录替换
+APP_DATA_PATH=/vol1/1000/docker/cardmine/app
+ANKI_DATA_PATH=/vol1/1000/docker/cardmine/anki
 
 APP_PORT=8080
+ANKI_PORT=8765
 
 # 首次全量同步完成前保持 false，完成后再改 true
 ANKI_FAIL_ON_FULL_SYNC_CONFLICT=false
@@ -74,7 +76,7 @@ ANKI_FAIL_ON_FULL_SYNC_CONFLICT=false
 创建目录并启动（按上面填写的绝对路径替换）：
 
 ```bash
-mkdir -p /volume1/docker/cardmine/app /volume1/docker/cardmine/anki
+mkdir -p /vol1/1000/docker/cardmine/app /vol1/1000/docker/cardmine/anki
 docker compose up -d --build
 docker compose ps
 ```
@@ -93,7 +95,7 @@ curl -s http://127.0.0.1:8080/api/health
 {"status":"ok","app_version":"0.1.0","db":"ok","schema_version":4,"anki_url":"http://anki-connect-server:8765/api"}
 ```
 
-> `anki-connect-server` 的端口**不要**映射到宿主机，只在 Compose 内网访问。
+> `anki-connect-server` 默认映射宿主机 `${ANKI_PORT:-8765}` 端口，方便在局域网内直连排障。该端口无鉴权，只应暴露给可信局域网，不要映射到公网；不需要时可在 `docker-compose.yml` 中注释掉 `ports`。
 
 ---
 
@@ -186,7 +188,7 @@ docker exec cardmine-anki rm -f /data/anki/import.apkg
 
 - `/export`：按模块/状态导出 `.apkg` 或 CSV（`Front, Back, Deck`），并查看 Anki 状态与最近同步失败。
 - `/export` 或 `/settings`：下载 SQLite 一致性备份与媒体清单。
-- Anki 同步前备份：宿主机 `APP_DATA_PATH/backups/anki/`，自动保留最近 7 份。
+- Anki 同步前备份：集合主库与 `-wal`/`-shm` 按文件复制，媒体目录做快照，保存在宿主机 `APP_DATA_PATH/backups/anki/`，自动保留最近 7 份。
 
 `.apkg` 可手动导入 Anki，作为容器异常时的兜底。
 
@@ -220,7 +222,7 @@ docker compose down
 ```bash
 docker compose stop
 tar czf cardmine-backup-$(date +%F).tar.gz \
-  -C /volume1/docker/cardmine app anki
+  -C /vol1/1000/docker/cardmine app anki
 docker compose start
 ```
 
@@ -236,8 +238,10 @@ docker compose start
 | `ANKIWEB_USER` | 空 | AnkiWeb 邮箱 |
 | `ANKIWEB_PASS` | 空 | AnkiWeb 密码 |
 | `ANKI_FAIL_ON_FULL_SYNC_CONFLICT` | `false` | 全量同步冲突保护，首次同步后改 `true` |
+| `ANKI_PORT` | `8765` | AnkiConnect 宿主机端口，无鉴权，仅限可信局域网 |
 | `CARDMINE_DATA_DIR` | `/data`（Compose 内固定） | 主应用数据目录 |
 | `CARDMINE_SCHEDULER` | `1` | `0` 关闭进程内定时抓取，仅本地调试用 |
+| `CARDMINE_ANKI_JOB_TIMEOUT` | `1800` | Anki 同步任务超时秒数，超时标记失败 |
 | `ANKI_CONNECT_URL` | `http://anki-connect-server:8765/api` | Compose 内固定 |
 
 ---
@@ -257,7 +261,7 @@ docker compose start
 ## 9. 安全
 
 - 不要把 `APP_PORT` 暴露到公网；如需外网访问，请自行加反向代理与鉴权。
-- `anki-connect-server` 端口不映射宿主机，避免 AnkiConnect 被直接访问。
+- `anki-connect-server` 默认映射宿主机 `8765`，且无鉴权；只允许可信局域网访问，不要暴露到公网。
 - AnkiWeb 凭据只存在 `.env` 与容器环境中，不写入数据库。
 - AI API Key 会明文保存在 SQLite 的 `setting` 表，请保护数据目录与备份文件。
 
@@ -293,6 +297,28 @@ docker compose logs -f anki-connect-server
 ```
 
 确认容器在运行、容器地址为 `http://anki-connect-server:8765/api`、模型为 `Basic` 且字段为 `Front/Back`。
+
+**同步任务一直停在「备份集合」或 `running`**
+
+新版本已改为按文件复制集合与 `-wal`/`-shm`，不再用 SQLite 在线备份打开 Anki 正在独占的集合。若仍卡住：
+
+1. 查看任务：`curl http://NAS_IP:8080/api/anki/jobs/<job_id>`
+2. 取消任务：`curl -X POST http://NAS_IP:8080/api/anki/jobs/<job_id>/cancel`（只把任务标记为失败，已发出的 AnkiConnect 请求可能仍在收尾）
+3. 检查 `APP_DATA_PATH/backups/anki/` 是否生成 0 字节文件，有则删除对应备份目录
+4. `docker compose restart app` 后重试
+5. 若仍报 `A synchronization is already in progress`，再执行 `docker compose restart anki-connect-server` 清掉 Anki 侧残留锁
+
+**直连 AnkiConnect 排障**
+
+默认映射 `ANKI_PORT=8765`，可直接在局域网访问：
+
+```bash
+curl -s http://NAS_IP:8765/ \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"version","version":6}'
+```
+
+该端口无鉴权，不要暴露到公网；不需要时可在 `docker-compose.yml` 中注释掉 `ports` 并 `docker compose up -d`。
 
 **全量同步冲突**
 

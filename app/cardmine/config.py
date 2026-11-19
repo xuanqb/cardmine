@@ -16,12 +16,17 @@ ANKI_CONNECT_URL = os.environ.get(
     "ANKI_CONNECT_URL", "http://anki-connect-server:8765/api"
 )
 
-# Anki 容器数据目录（只读挂载），用于同步前备份集合与媒体
+# Anki 容器数据目录，用于同步前按文件复制集合与媒体
 ANKI_DATA_DIR = Path(os.environ.get("ANKI_DATA_DIR", DATA_DIR / "anki"))
 BACKUP_DIR = DATA_DIR / "backups" / "anki"
 
 # 进程内定时抓取，本地调试可用 CARDMINE_SCHEDULER=0 关闭
 SCHEDULER_ENABLED = os.environ.get("CARDMINE_SCHEDULER", "1") != "0"
+
+# Anki 同步任务总超时：超时后任务标记失败，避免界面永久停在 running
+ANKI_JOB_TIMEOUT_SECONDS = int(
+    os.environ.get("CARDMINE_ANKI_JOB_TIMEOUT", "1800")
+)
 
 
 def ensure_dirs() -> None:
