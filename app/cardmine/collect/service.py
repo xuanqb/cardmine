@@ -228,6 +228,8 @@ def _run_fetch(settings: dict, progress: Progress | None = None) -> dict:
         settings.get("ai_api_key", ""),
         settings.get("ai_chat_model", ""),
         settings.get("ai_embedding_model", ""),
+        settings.get("ai_embedding_base_url", ""),
+        settings.get("ai_embedding_api_key", ""),
     )
     ensure_default_feed(settings)
 

@@ -34,11 +34,15 @@ class AIClient:
         api_key: str,
         chat_model: str,
         embedding_model: str = "",
+        embedding_base_url: str = "",
+        embedding_api_key: str = "",
     ):
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key or ""
         self.chat_model = chat_model or ""
         self.embedding_model = embedding_model or ""
+        self.embedding_base_url = (embedding_base_url or self.base_url).rstrip("/")
+        self.embedding_api_key = embedding_api_key or self.api_key
 
     @property
     def configured(self) -> bool:
@@ -46,14 +50,22 @@ class AIClient:
 
     @property
     def embeddings_configured(self) -> bool:
-        return bool(self.base_url and self.embedding_model)
+        return bool(self.embedding_base_url and self.embedding_model)
 
-    def _post(self, path: str, payload: dict, timeout: int = 180):
+    def _post(
+        self,
+        path: str,
+        payload: dict,
+        timeout: int = 180,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ):
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        token = self.api_key if api_key is None else api_key
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
-            f"{self.base_url}{path}",
+            f"{(base_url or self.base_url)}{path}",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers=headers,
             method="POST",
@@ -96,7 +108,10 @@ class AIClient:
         if not texts:
             return []
         data = self._post(
-            "/embeddings", {"model": self.embedding_model, "input": texts}
+            "/embeddings",
+            {"model": self.embedding_model, "input": texts},
+            base_url=self.embedding_base_url,
+            api_key=self.embedding_api_key,
         )
         items = sorted(data.get("data") or [], key=lambda item: item.get("index", 0))
         vectors = [item.get("embedding") for item in items]

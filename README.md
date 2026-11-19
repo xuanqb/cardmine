@@ -162,8 +162,10 @@ docker exec cardmine-anki rm -f /data/anki/import.apkg
 |---|---|
 | RSS 源 | **默认为空**，必须填写实际 RSS 地址 |
 | 抓取间隔 | 默认 60 分钟，最小 5 分钟 |
-| AI Base URL / API Key | OpenAI 兼容接口 |
-| Chat / Embedding 模型 | 切题与向量去重所用模型 |
+| Chat Base URL / API Key | OpenAI 兼容接口，用于切题与重复复核 |
+| Chat 模型 | 切题与判断所用模型 |
+| Embedding Base URL / API Key | 可选；留空则复用 Chat 的地址和密钥，用于向量去重 |
+| Embedding 模型 | 向量模型，可与 Chat 使用不同服务商 |
 | 向量维度 | 必须与 embedding 模型输出一致，默认 1024 |
 | 去重高阈值 | 默认 0.92，达到后直接归并 |
 | 去重低阈值 | 默认 0.82，中间区间进入待确认 |
@@ -172,6 +174,8 @@ docker exec cardmine-anki rm -f /data/anki/import.apkg
 | 全量同步冲突保护 | 首次同步完成后建议开启 |
 
 保存设置后会自动创建/更新 RSS 源，无需重启。回到仪表盘点 **立即抓取** 即可开始。
+
+> Chat 和 Embedding 可以指向不同服务商：例如 Chat 用网关的 `deepseek-*`，Embedding 单独填硅基流动的 `https://api.siliconflow.cn/v1`、对应 Key 与 `BAAI/bge-m3`。只填 Chat、Embedding 留空时，会自动复用 Chat 的地址和密钥。
 
 ### 5.2 日常流程
 

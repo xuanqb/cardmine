@@ -101,20 +101,32 @@
       </fieldset>
 
       <fieldset>
-        <legend>AI</legend>
+        <legend>AI · Chat</legend>
         <label class="field">
-          <span>Base URL</span>
+          <span>Chat Base URL</span>
           <input type="text" name="ai_base_url" autocomplete="off" placeholder="https://api.example.com/v1">
         </label>
         <label class="field">
-          <span>API Key</span>
+          <span>Chat API Key</span>
           <input type="password" name="ai_api_key" autocomplete="off">
         </label>
+        <label class="field">
+          <span>Chat 模型</span>
+          <input type="text" name="ai_chat_model" autocomplete="off">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>AI · Embedding</legend>
+        <label class="field">
+          <span>Embedding Base URL</span>
+          <input type="text" name="ai_embedding_base_url" autocomplete="off" placeholder="留空则复用 Chat Base URL">
+        </label>
+        <label class="field">
+          <span>Embedding API Key</span>
+          <input type="password" name="ai_embedding_api_key" autocomplete="off" placeholder="留空则复用 Chat API Key">
+        </label>
         <div class="field-row">
-          <label class="field">
-            <span>Chat 模型</span>
-            <input type="text" name="ai_chat_model" autocomplete="off">
-          </label>
           <label class="field">
             <span>Embedding 模型</span>
             <input type="text" name="ai_embedding_model" autocomplete="off">

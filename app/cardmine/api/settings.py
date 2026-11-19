@@ -16,6 +16,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ai_base_url": "",
     "ai_api_key": "",
     "ai_chat_model": "",
+    "ai_embedding_base_url": "",
+    "ai_embedding_api_key": "",
     "ai_embedding_model": "",
     "ai_embedding_dim": 1024,
     "dup_high_threshold": 0.92,
@@ -33,6 +35,8 @@ class SettingsIn(BaseModel):
     ai_base_url: str | None = None
     ai_api_key: str | None = None
     ai_chat_model: str | None = None
+    ai_embedding_base_url: str | None = None
+    ai_embedding_api_key: str | None = None
     ai_embedding_model: str | None = None
     ai_embedding_dim: int | None = Field(None, ge=1)
     dup_high_threshold: float | None = Field(None, ge=0, le=1)
