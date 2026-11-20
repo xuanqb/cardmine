@@ -125,9 +125,7 @@ function renderSources() {
   for (const source of card.sources) {
     const item = document.createElement("li");
     const link = document.createElement("a");
-    link.href = source.url || "#";
-    link.target = "_blank";
-    link.rel = "noreferrer";
+    link.href = source.id ? `/posts/${source.id}` : source.url || "#";
     link.textContent = source.title || source.url || "未命名面经";
     const meta = document.createElement("span");
     meta.className = "variant-meta";
