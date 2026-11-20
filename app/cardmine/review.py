@@ -297,11 +297,16 @@ def resolve_batch(candidate_ids: list[int], action: str) -> dict:
     return {"resolved": resolved, "errors": errors}
 
 
-def list_actions(limit: int = 30) -> dict:
-    limit = min(100, max(1, limit))
+def list_actions(page: int = 1, page_size: int = 10) -> dict:
+    page = max(1, page)
+    page_size = min(50, max(1, page_size))
     with closing(connect()) as conn:
+        total = conn.execute("SELECT COUNT(*) AS value FROM review_action").fetchone()[
+            "value"
+        ]
         rows = conn.execute(
-            "SELECT * FROM review_action ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT * FROM review_action ORDER BY id DESC LIMIT ? OFFSET ?",
+            (page_size, (page - 1) * page_size),
         ).fetchall()
 
     items = []
@@ -329,7 +334,12 @@ def list_actions(limit: int = 30) -> dict:
                 "candidate_id": candidate.get("id"),
             }
         )
-    return {"items": items}
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def undo_action(action_id: int) -> dict:

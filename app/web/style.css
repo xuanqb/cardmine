@@ -1464,6 +1464,21 @@ a.mention-title:hover {
   font-size: 12px;
 }
 
+.action-pager {
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.action-pager button {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.action-pager .pager-info {
+  font-size: 11px;
+}
+
 @media (max-width: 980px) {
   .review-layout {
     grid-template-columns: 1fr;

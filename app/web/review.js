@@ -6,6 +6,9 @@ const scanButton = document.getElementById("scan-run");
 const scanProgress = document.getElementById("scan-progress");
 const scanSummary = document.getElementById("scan-summary");
 const actionList = document.getElementById("action-list");
+const actionPrev = document.getElementById("action-prev");
+const actionNext = document.getElementById("action-next");
+const actionPageInfo = document.getElementById("action-page-info");
 const batchButtons = {
   merge: document.getElementById("batch-merge"),
   keep: document.getElementById("batch-keep"),
@@ -13,6 +16,7 @@ const batchButtons = {
 };
 
 const state = { page: 1, pageSize: 10, total: 0, q: "", status: "pending" };
+const actionState = { page: 1, pageSize: 10, total: 0 };
 const selected = new Set();
 const ACTION_LABEL = { merge: "合并", keep: "保持独立", ignore: "忽略" };
 
@@ -231,6 +235,7 @@ async function resolveOne(candidateId, action) {
     });
     selected.delete(candidateId);
     showToast(`已${ACTION_LABEL[action] || "处理"}`);
+    actionState.page = 1;
     await Promise.all([loadCandidates(), loadActions()]);
   } catch (error) {
     showToast(error.message || "操作失败", true);
@@ -257,6 +262,7 @@ async function resolveBatch(action) {
       errors.length ? `，失败 ${errors.length} 条：${errors[0].error}` : ""
     }`;
     showToast(message, errors.length > 0);
+    actionState.page = 1;
     await Promise.all([loadCandidates(), loadActions()]);
   } catch (error) {
     showToast(error.message || "批量操作失败", true);
@@ -403,10 +409,23 @@ function renderActions(items) {
   }
 }
 
+function renderActionPager() {
+  const pages = Math.max(1, Math.ceil(actionState.total / actionState.pageSize));
+  actionPageInfo.textContent = `第 ${actionState.page} / ${pages} 页 · 共 ${actionState.total} 条`;
+  actionPrev.disabled = actionState.page <= 1;
+  actionNext.disabled = actionState.page >= pages;
+}
+
 async function loadActions() {
   try {
-    const data = await fetchJSON("/api/review/actions?limit=20");
+    const params = new URLSearchParams({
+      page: actionState.page,
+      page_size: actionState.pageSize,
+    });
+    const data = await fetchJSON(`/api/review/actions?${params.toString()}`);
+    actionState.total = data.total || 0;
     renderActions(data.items || []);
+    renderActionPager();
   } catch (error) {
     // 操作记录加载失败不影响主流程
   }
@@ -457,6 +476,19 @@ document.getElementById("next").addEventListener("click", () => {
   if (state.page * state.pageSize < state.total) {
     state.page += 1;
     loadCandidates();
+  }
+});
+
+actionPrev.addEventListener("click", () => {
+  if (actionState.page > 1) {
+    actionState.page -= 1;
+    loadActions();
+  }
+});
+actionNext.addEventListener("click", () => {
+  if (actionState.page * actionState.pageSize < actionState.total) {
+    actionState.page += 1;
+    loadActions();
   }
 });
 

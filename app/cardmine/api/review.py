@@ -112,8 +112,11 @@ def get_scan_job(job_id: str) -> dict:
 
 
 @router.get("/review/actions")
-def list_actions(limit: int = Query(30, ge=1, le=100)) -> dict:
-    return review.list_actions(limit)
+def list_actions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50),
+) -> dict:
+    return review.list_actions(page, page_size)
 
 
 @router.post("/review/actions/{action_id}/undo")
