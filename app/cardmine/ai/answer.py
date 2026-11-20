@@ -46,6 +46,7 @@ def _client(settings: dict) -> AIClient:
         settings.get("ai_answer_base_url") or settings.get("ai_base_url", ""),
         settings.get("ai_answer_api_key") or settings.get("ai_api_key", ""),
         settings.get("ai_answer_model") or settings.get("ai_chat_model", ""),
+        reasoning_effort=settings.get("ai_answer_reasoning_effort") or "",
     )
 
 

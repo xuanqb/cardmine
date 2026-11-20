@@ -19,6 +19,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ai_answer_base_url": "",
     "ai_answer_api_key": "",
     "ai_answer_model": "",
+    "ai_answer_reasoning_effort": "",
     "ai_embedding_base_url": "",
     "ai_embedding_api_key": "",
     "ai_embedding_model": "",
@@ -41,6 +42,7 @@ class SettingsIn(BaseModel):
     ai_answer_base_url: str | None = None
     ai_answer_api_key: str | None = None
     ai_answer_model: str | None = None
+    ai_answer_reasoning_effort: str | None = None
     ai_embedding_base_url: str | None = None
     ai_embedding_api_key: str | None = None
     ai_embedding_model: str | None = None
@@ -75,6 +77,10 @@ def get_settings() -> dict[str, Any]:
 @router.put("/settings")
 def update_settings(payload: SettingsIn) -> dict[str, Any]:
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+
+    effort = updates.get("ai_answer_reasoning_effort")
+    if effort is not None and effort not in {"", "low", "medium", "high"}:
+        raise HTTPException(status_code=400, detail="不支持的思考强度")
 
     merged = {**load_settings(), **updates}
     if merged["dup_high_threshold"] <= merged["dup_low_threshold"]:

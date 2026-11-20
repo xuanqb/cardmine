@@ -36,6 +36,7 @@ class AIClient:
         embedding_model: str = "",
         embedding_base_url: str = "",
         embedding_api_key: str = "",
+        reasoning_effort: str = "",
     ):
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key or ""
@@ -43,6 +44,7 @@ class AIClient:
         self.embedding_model = embedding_model or ""
         self.embedding_base_url = (embedding_base_url or self.base_url).rstrip("/")
         self.embedding_api_key = embedding_api_key or self.api_key
+        self.reasoning_effort = (reasoning_effort or "").strip()
 
     @property
     def configured(self) -> bool:
@@ -115,6 +117,8 @@ class AIClient:
             ],
             "temperature": temperature,
         }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
         last: Exception | None = None
         for attempt in range(retries):
             try:
