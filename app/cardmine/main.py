@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .api import (
+    ai_answer_router,
     anki_router,
     cards_router,
     collect_router,
@@ -36,6 +37,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="cardmine", version=config.APP_VERSION, lifespan=lifespan)
+app.include_router(ai_answer_router)
 app.include_router(anki_router)
 app.include_router(cards_router)
 app.include_router(collect_router)

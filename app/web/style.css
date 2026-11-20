@@ -703,6 +703,17 @@ button:disabled {
   color: var(--text-muted);
 }
 
+.card-badges {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.badge.ai {
+  color: var(--brand);
+  border-color: rgba(26, 127, 55, 0.35);
+}
+
 .empty-state {
   padding: 40px 0;
   text-align: center;
@@ -917,6 +928,58 @@ button.ghost:disabled {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.ai-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.ai-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ai-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.ai-meta {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-actions button {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.ai-body {
+  margin-top: 12px;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.ai-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 12px;
 }
 
 .markdown-body {

@@ -80,6 +80,8 @@ def list_cards(
         rows = conn.execute(
             f"""
             SELECT kp.id, kp.front_md, kp.status, kp.updated_at,
+                   kp.ai_status,
+                   (TRIM(COALESCE(kp.ai_back_md, '')) != '') AS has_ai_answer,
                    m.path AS module_path,
                    (SELECT COUNT(*) FROM mention me WHERE me.kp_id = kp.id) AS mention_count,
                    (SELECT MAX(me.created_at) FROM mention me WHERE me.kp_id = kp.id)

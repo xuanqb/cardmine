@@ -94,6 +94,23 @@
           <div class="markdown-body" id="preview"></div>
         </div>
       </div>
+
+      <section class="ai-panel">
+        <div class="ai-head">
+          <div>
+            <h3>AI 建议答案</h3>
+            <p class="ai-meta" id="ai-meta">未生成</p>
+          </div>
+          <div class="ai-actions">
+            <button type="button" class="ghost" id="ai-generate">生成 AI 答案</button>
+            <button type="button" class="ghost" id="ai-adopt" hidden>采用（覆盖）</button>
+            <button type="button" class="ghost" id="ai-append" hidden>追加到末尾</button>
+            <button type="button" class="ghost" id="ai-clear" hidden>清空</button>
+          </div>
+        </div>
+        <div class="markdown-body ai-body" id="ai-body" hidden></div>
+        <p class="ai-error" id="ai-error" hidden></p>
+      </section>
     </section>
   </main>
 

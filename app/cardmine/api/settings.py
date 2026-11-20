@@ -16,6 +16,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ai_base_url": "",
     "ai_api_key": "",
     "ai_chat_model": "",
+    "ai_answer_base_url": "",
+    "ai_answer_api_key": "",
+    "ai_answer_model": "",
     "ai_embedding_base_url": "",
     "ai_embedding_api_key": "",
     "ai_embedding_model": "",
@@ -35,6 +38,9 @@ class SettingsIn(BaseModel):
     ai_base_url: str | None = None
     ai_api_key: str | None = None
     ai_chat_model: str | None = None
+    ai_answer_base_url: str | None = None
+    ai_answer_api_key: str | None = None
+    ai_answer_model: str | None = None
     ai_embedding_base_url: str | None = None
     ai_embedding_api_key: str | None = None
     ai_embedding_model: str | None = None

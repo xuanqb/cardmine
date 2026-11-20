@@ -92,7 +92,7 @@ curl -s http://127.0.0.1:8080/api/health
 期望返回：
 
 ```json
-{"status":"ok","app_version":"0.1.0","db":"ok","schema_version":4,"anki_url":"http://anki-connect-server:8765/api"}
+{"status":"ok","app_version":"0.1.0","db":"ok","schema_version":5,"anki_url":"http://anki-connect-server:8765/api"}
 ```
 
 > `anki-connect-server` 默认映射宿主机 `${ANKI_PORT:-8765}` 端口，方便在局域网内直连排障。该端口无鉴权，只应暴露给可信局域网，不要映射到公网；不需要时可在 `docker-compose.yml` 中注释掉 `ports`。
@@ -164,6 +164,7 @@ docker exec cardmine-anki rm -f /data/anki/import.apkg
 | 抓取间隔 | 默认 60 分钟，最小 5 分钟 |
 | Chat Base URL / API Key | OpenAI 兼容接口，用于切题与重复复核 |
 | Chat 模型 | 切题与判断所用模型 |
+| AI 答案 Base URL / API Key / 模型 | 可选；草稿生成 AI 建议答案所用配置，留空则复用 Chat 的地址、密钥和模型 |
 | Embedding Base URL / API Key | 可选；留空则复用 Chat 的地址和密钥，用于向量去重 |
 | Embedding 模型 | 向量模型，可与 Chat 使用不同服务商 |
 | 向量维度 | 必须与 embedding 模型输出一致，默认 1024 |

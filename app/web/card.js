@@ -8,10 +8,19 @@ const preview = document.getElementById("preview");
 const saveButton = document.getElementById("save-button");
 const toast = document.getElementById("toast");
 
+const aiMeta = document.getElementById("ai-meta");
+const aiBody = document.getElementById("ai-body");
+const aiError = document.getElementById("ai-error");
+const aiGenerate = document.getElementById("ai-generate");
+const aiAdopt = document.getElementById("ai-adopt");
+const aiAppend = document.getElementById("ai-append");
+const aiClear = document.getElementById("ai-clear");
+
 let card = null;
 let editor = null;
 let markdown = null;
 let toastTimer = null;
+let aiBusy = false;
 
 function showToast(message, isError = false) {
   toast.textContent = message;
@@ -27,10 +36,9 @@ function getBack() {
   return editor ? editor.getValue() : backTextarea.value;
 }
 
-function renderPreview() {
-  const source = getBack();
+function renderMarkdown(source, target) {
   if (!window.markdownit) {
-    preview.textContent = source;
+    target.textContent = source;
     return;
   }
   if (!markdown) {
@@ -56,13 +64,64 @@ function renderPreview() {
     });
   }
 
-  preview.innerHTML = markdown.render(source);
-  preview.querySelectorAll("img").forEach((image) => {
+  target.innerHTML = markdown.render(source);
+  target.querySelectorAll("img").forEach((image) => {
     const src = image.getAttribute("src") || "";
     if (src && !/^(?:[a-z]+:|\/|#)/i.test(src)) {
       image.src = `/media/${encodeURIComponent(src)}`;
     }
   });
+}
+
+function renderPreview() {
+  renderMarkdown(getBack(), preview);
+}
+
+function setBack(value) {
+  if (editor) {
+    editor.setValue(value);
+  } else {
+    backTextarea.value = value;
+  }
+  renderPreview();
+}
+
+function renderAI() {
+  const hasAnswer = Boolean((card.ai_back_md || "").trim());
+  const status = card.ai_status || "none";
+
+  aiError.hidden = true;
+  aiError.textContent = "";
+  aiBody.hidden = !hasAnswer;
+  if (hasAnswer) {
+    renderMarkdown(card.ai_back_md, aiBody);
+  } else {
+    aiBody.replaceChildren();
+  }
+
+  aiAdopt.hidden = !hasAnswer;
+  aiAppend.hidden = !hasAnswer;
+  aiClear.hidden = !hasAnswer;
+  aiGenerate.disabled = aiBusy;
+  aiGenerate.textContent = hasAnswer ? "重新生成" : "生成 AI 答案";
+
+  if (aiBusy) {
+    aiMeta.textContent = "生成中，通常需要几十秒…";
+    return;
+  }
+  if (status === "failed") {
+    aiMeta.textContent = "生成失败";
+    aiError.hidden = false;
+    aiError.textContent = card.ai_error || "未知错误";
+    return;
+  }
+  if (status === "running") {
+    aiMeta.textContent = "上次生成未完成，可重新生成";
+    return;
+  }
+  aiMeta.textContent = hasAnswer
+    ? `生成于 ${window.cm.formatTime(card.ai_generated_at)}`
+    : "未生成";
 }
 
 const schedulePreview = window.cm.debounce(renderPreview, 180);
@@ -151,6 +210,7 @@ function applySaved(updated) {
   renderInfo();
   renderVariants();
   renderSources();
+  renderAI();
   if (card.module_id) moduleSelect.value = String(card.module_id);
 }
 
@@ -176,6 +236,57 @@ async function save() {
   } finally {
     saveButton.disabled = false;
   }
+}
+
+async function generateAI() {
+  if (aiBusy) return;
+  aiBusy = true;
+  renderAI();
+  try {
+    card = await window.cm.fetchJSON(`/api/cards/${cardId}/ai-answer`, {
+      method: "POST",
+    });
+    showToast("AI 答案已生成");
+  } catch (error) {
+    try {
+      card = await window.cm.fetchJSON(`/api/cards/${cardId}`);
+    } catch (ignored) {
+      /* 保留原卡片状态 */
+    }
+    showToast(error.message || "生成失败", true);
+  } finally {
+    aiBusy = false;
+    renderAI();
+  }
+}
+
+async function clearAI() {
+  aiClear.disabled = true;
+  try {
+    card = await window.cm.fetchJSON(`/api/cards/${cardId}/ai-answer`, {
+      method: "DELETE",
+    });
+    renderAI();
+    showToast("已清空 AI 答案");
+  } catch (error) {
+    showToast(error.message || "清空失败", true);
+  } finally {
+    aiClear.disabled = false;
+  }
+}
+
+function adoptAI() {
+  if (!(card.ai_back_md || "").trim()) return;
+  setBack(card.ai_back_md);
+  showToast("已填入编辑器，记得保存");
+}
+
+function appendAI() {
+  const answer = (card.ai_back_md || "").trim();
+  if (!answer) return;
+  const current = getBack().trim();
+  setBack(current ? `${current}\n\n${answer}` : answer);
+  showToast("已追加到末尾，记得保存");
 }
 
 async function init() {
@@ -209,8 +320,13 @@ async function init() {
     renderSources();
     renderModuleOptions(modules);
     renderPreview();
+    renderAI();
 
     saveButton.addEventListener("click", save);
+    aiGenerate.addEventListener("click", generateAI);
+    aiAdopt.addEventListener("click", adoptAI);
+    aiAppend.addEventListener("click", appendAI);
+    aiClear.addEventListener("click", clearAI);
     frontInput.addEventListener("input", () => {
       document.getElementById("front-view").textContent = frontInput.value;
     });

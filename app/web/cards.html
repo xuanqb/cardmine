@@ -49,6 +49,17 @@
           <option value="mentions_desc">按出现次数</option>
           <option value="recent_desc">按最近出现</option>
         </select>
+        <button type="button" class="ghost" id="ai-batch-button">批量生成草稿答案</button>
+      </div>
+
+      <div class="progress-wrap" id="ai-batch-progress" hidden>
+        <div class="progress-head">
+          <span id="ai-batch-phase">排队中</span>
+          <span id="ai-batch-count"></span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="ai-batch-fill"></div>
+        </div>
       </div>
 
       <div class="card-list" id="card-list"></div>

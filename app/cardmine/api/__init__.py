@@ -1,3 +1,4 @@
+from .ai_answer import router as ai_answer_router
 from .anki import router as anki_router
 from .cards import router as cards_router
 from .collect import router as collect_router
@@ -10,6 +11,7 @@ from .settings import router as settings_router
 from .stats import router as stats_router
 
 __all__ = [
+    "ai_answer_router",
     "anki_router",
     "cards_router",
     "collect_router",

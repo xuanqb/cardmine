@@ -104,6 +104,31 @@ class AIClient:
                     time.sleep(2**attempt)
         raise AIError(f"AI 调用失败（重试 {retries} 次）: {last}")
 
+    def chat_text(
+        self, system: str, user: str, retries: int = 3, temperature: float = 0.3
+    ) -> str:
+        payload = {
+            "model": self.chat_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+        }
+        last: Exception | None = None
+        for attempt in range(retries):
+            try:
+                data = self._post("/chat/completions", payload)
+                content = data["choices"][0]["message"]["content"]
+                if not (content or "").strip():
+                    raise AIError("模型返回空内容")
+                return content
+            except (AIError, KeyError, IndexError, TypeError) as exc:
+                last = exc
+                if attempt + 1 < retries:
+                    time.sleep(2**attempt)
+        raise AIError(f"AI 调用失败（重试 {retries} 次）: {last}")
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
