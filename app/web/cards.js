@@ -18,6 +18,70 @@ const nextButton = document.getElementById("next");
 const pageInfo = document.getElementById("page-info");
 const treeAll = document.getElementById("tree-all");
 
+const FILTER_KEY = "cardmine.cards.filters";
+const SORT_VALUES = new Set(["updated_desc", "mentions_desc", "recent_desc"]);
+const STATUS_VALUES = new Set(["", "draft", "ready", "archived"]);
+
+function restoreState() {
+  const params = new URLSearchParams(window.location.search);
+  const hasQuery = [...params.keys()].length > 0;
+  let saved = null;
+  if (!hasQuery) {
+    try {
+      saved = JSON.parse(sessionStorage.getItem(FILTER_KEY) || "null");
+    } catch {
+      saved = null;
+    }
+  }
+
+  const source = hasQuery
+    ? {
+        moduleId: params.has("module_id") ? Number(params.get("module_id")) : null,
+        status: params.get("status") || "",
+        sort: params.get("sort") || state.sort,
+        q: params.get("q") || "",
+        page: Number(params.get("page") || 1),
+      }
+    : saved;
+  if (!source) return;
+
+  if (Number.isInteger(source.moduleId) && source.moduleId > 0) {
+    state.moduleId = source.moduleId;
+  }
+  if (STATUS_VALUES.has(source.status)) state.status = source.status;
+  if (SORT_VALUES.has(source.sort)) state.sort = source.sort;
+  if (typeof source.q === "string") state.q = source.q;
+  if (Number.isInteger(source.page) && source.page > 0) state.page = source.page;
+}
+
+function persistState() {
+  const params = new URLSearchParams();
+  if (state.moduleId !== null) params.set("module_id", String(state.moduleId));
+  if (state.status) params.set("status", state.status);
+  if (state.q) params.set("q", state.q);
+  params.set("sort", state.sort);
+  params.set("page", String(state.page));
+  window.history.replaceState(null, "", `/cards?${params.toString()}`);
+  try {
+    sessionStorage.setItem(FILTER_KEY, JSON.stringify(state));
+  } catch {
+    /* 隐私模式下忽略 */
+  }
+}
+
+function syncControls() {
+  searchInput.value = state.q;
+  statusFilter.value = state.status;
+  sortSelect.value = state.sort;
+}
+
+function setActiveTreeById(moduleId) {
+  treeAll.classList.toggle("active", moduleId === null);
+  document.querySelectorAll(".tree-item[data-module-id]").forEach((item) => {
+    item.classList.toggle("active", Number(item.dataset.moduleId) === moduleId);
+  });
+}
+
 function setActiveTree(button) {
   document
     .querySelectorAll(".tree-item.active")
@@ -42,6 +106,7 @@ function buildTree(nodes, depth = 0) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "tree-item";
+    button.dataset.moduleId = String(node.id);
 
     const name = document.createElement("span");
     name.textContent = node.name;
@@ -131,6 +196,7 @@ function renderPager() {
 }
 
 async function loadCards() {
+  persistState();
   const params = new URLSearchParams({
     page: String(state.page),
     page_size: String(state.pageSize),
@@ -174,6 +240,14 @@ async function loadModules() {
   try {
     const tree = await window.cm.fetchJSON("/api/modules");
     treeBox.replaceChildren(buildTree(tree));
+    if (
+      state.moduleId !== null &&
+      !treeBox.querySelector(`[data-module-id="${state.moduleId}"]`)
+    ) {
+      state.moduleId = null;
+      persistState();
+    }
+    setActiveTreeById(state.moduleId);
   } catch (error) {
     treeBox.textContent = "目录加载失败";
   }
@@ -186,14 +260,14 @@ treeAll.addEventListener("click", () => {
   loadCards();
 });
 
-searchInput.addEventListener(
-  "input",
-  window.cm.debounce(() => {
-    state.q = searchInput.value.trim();
-    state.page = 1;
-    loadCards();
-  })
-);
+const reloadAfterSearch = window.cm.debounce(() => loadCards(), 300);
+
+searchInput.addEventListener("input", () => {
+  state.q = searchInput.value.trim();
+  state.page = 1;
+  persistState();
+  reloadAfterSearch();
+});
 
 statusFilter.addEventListener("change", () => {
   state.status = statusFilter.value;
@@ -222,5 +296,7 @@ nextButton.addEventListener("click", () => {
   }
 });
 
+restoreState();
+syncControls();
 loadModules();
 loadCards();
