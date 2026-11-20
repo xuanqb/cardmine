@@ -6,6 +6,7 @@ const frontInput = document.getElementById("front-input");
 const backTextarea = document.getElementById("back-input");
 const preview = document.getElementById("preview");
 const saveButton = document.getElementById("save-button");
+const saveReadyButton = document.getElementById("save-ready-button");
 const toast = document.getElementById("toast");
 
 const aiMeta = document.getElementById("ai-meta");
@@ -214,12 +215,18 @@ function applySaved(updated) {
   if (card.module_id) moduleSelect.value = String(card.module_id);
 }
 
-async function save() {
+async function save(statusOverride) {
+  const nextStatus = statusOverride || statusSelect.value;
+  if (nextStatus === "ready" && !getBack().trim()) {
+    showToast("背面为空，先补充内容再整理", true);
+    return;
+  }
   saveButton.disabled = true;
+  saveReadyButton.disabled = true;
   const payload = {
     front_md: frontInput.value,
     back_md: getBack(),
-    status: statusSelect.value,
+    status: nextStatus,
   };
   if (moduleSelect.value) payload.module_id = Number(moduleSelect.value);
 
@@ -230,11 +237,12 @@ async function save() {
       body: JSON.stringify(payload),
     });
     applySaved(updated);
-    showToast("已保存");
+    showToast("已保存" + (nextStatus === "ready" ? "并整理" : ""));
   } catch (error) {
     showToast(error.message || "保存失败", true);
   } finally {
     saveButton.disabled = false;
+    saveReadyButton.disabled = false;
   }
 }
 
@@ -322,7 +330,8 @@ async function init() {
     renderPreview();
     renderAI();
 
-    saveButton.addEventListener("click", save);
+    saveButton.addEventListener("click", () => save());
+    saveReadyButton.addEventListener("click", () => save("ready"));
     aiGenerate.addEventListener("click", generateAI);
     aiAdopt.addEventListener("click", adoptAI);
     aiAppend.addEventListener("click", appendAI);

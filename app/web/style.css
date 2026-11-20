@@ -877,6 +877,10 @@ button.ghost:disabled {
   gap: 10px;
 }
 
+.editor-actions button.ghost {
+  padding: 9px 16px;
+}
+
 .button-link {
   padding: 9px 14px;
   border: 1px solid var(--border);
