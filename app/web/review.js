@@ -19,7 +19,7 @@ const state = { page: 1, pageSize: 10, total: 0, q: "", status: "pending" };
 const actionState = { page: 1, pageSize: 10, total: 0 };
 const selected = new Set();
 const keepSide = new Map();
-const ACTION_LABEL = { merge: "合并", keep: "保持独立", ignore: "忽略" };
+const ACTION_LABEL = { merge: "合并", merge_cards: "合并多卡", keep: "保持独立", ignore: "忽略" };
 
 let toastTimer = null;
 let busy = false;

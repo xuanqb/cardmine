@@ -4,6 +4,7 @@ from contextlib import closing
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from .. import review
 from ..db import connect, utc_now
 from ..importer.textfmt import normalize_front
 
@@ -152,6 +153,22 @@ def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
 def get_card(card_id: int) -> dict:
     with closing(connect()) as conn:
         return _fetch_detail(conn, card_id)
+
+
+class CardMerge(BaseModel):
+    survivor_id: int = Field(ge=1)
+    source_ids: list[int] = Field(min_length=1)
+
+
+@router.post("/cards/merge")
+def merge_cards(payload: CardMerge) -> dict:
+    try:
+        result = review.merge_cards(payload.survivor_id, payload.source_ids)
+    except review.ReviewError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    with closing(connect()) as conn:
+        result["card"] = _fetch_detail(conn, payload.survivor_id)
+    return result
 
 
 class CardUpdate(BaseModel):

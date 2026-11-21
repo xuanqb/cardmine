@@ -49,6 +49,7 @@
           <option value="mentions_desc">按出现次数</option>
           <option value="recent_desc">按最近出现</option>
         </select>
+        <button type="button" class="ghost" id="merge-button" disabled>合并所选</button>
         <button type="button" class="ghost" id="ai-batch-button">批量生成草稿答案</button>
       </div>
 
@@ -71,6 +72,21 @@
       </div>
     </section>
   </main>
+
+  <div class="modal-backdrop" id="merge-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="merge-title">
+      <h2 id="merge-title">合并所选卡片</h2>
+      <p class="modal-hint">
+        选择一张作为保留卡，其余卡片的背面与问法会并入，随后被删除。合并后保留卡回到草稿状态。
+      </p>
+      <div class="merge-choice-list" id="merge-card-list"></div>
+      <div class="merge-warnings" id="merge-warnings"></div>
+      <div class="modal-actions">
+        <button type="button" class="ghost" id="merge-cancel">取消</button>
+        <button type="button" id="merge-confirm">确认合并</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/common.js"></script>
   <script src="/static/cards.js"></script>

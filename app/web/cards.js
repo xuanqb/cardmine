@@ -22,6 +22,17 @@ const aiBatchProgress = document.getElementById("ai-batch-progress");
 const aiBatchPhase = document.getElementById("ai-batch-phase");
 const aiBatchCount = document.getElementById("ai-batch-count");
 const aiBatchFill = document.getElementById("ai-batch-fill");
+const mergeButton = document.getElementById("merge-button");
+const mergeModal = document.getElementById("merge-modal");
+const mergeCardList = document.getElementById("merge-card-list");
+const mergeWarnings = document.getElementById("merge-warnings");
+const mergeCancel = document.getElementById("merge-cancel");
+const mergeConfirm = document.getElementById("merge-confirm");
+
+const selectedIds = new Set();
+let mergeDetails = [];
+let mergeSurvivorId = null;
+let mergeBusy = false;
 
 let aiBatchRunning = false;
 
@@ -164,6 +175,25 @@ function buildTree(nodes, depth = 0) {
 }
 
 function renderCardRow(item) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "card-item";
+
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.className = "card-select";
+  checkbox.checked = selectedIds.has(item.id);
+  checkbox.setAttribute("aria-label", "选择该卡片用于合并");
+  checkbox.addEventListener("change", () => {
+    if (checkbox.checked) {
+      selectedIds.add(item.id);
+    } else {
+      selectedIds.delete(item.id);
+    }
+    wrapper.classList.toggle("selected", checkbox.checked);
+    updateSelectionUI();
+  });
+  wrapper.classList.toggle("selected", checkbox.checked);
+
   const row = document.createElement("a");
   row.className = "card-row";
   row.href = `/cards/${item.id}`;
@@ -202,7 +232,15 @@ function renderCardRow(item) {
   right.appendChild(badge);
 
   row.append(main, right);
-  return row;
+  wrapper.append(checkbox, row);
+  return wrapper;
+}
+
+function updateSelectionUI() {
+  mergeButton.disabled = selectedIds.size < 2;
+  mergeButton.textContent = selectedIds.size
+    ? `合并所选（${selectedIds.size}）`
+    : "合并所选";
 }
 
 function renderPager() {
@@ -338,6 +376,139 @@ async function runBatch() {
   }
 }
 
+function renderMergeChoices() {
+  mergeCardList.replaceChildren();
+  for (const card of mergeDetails) {
+    const label = document.createElement("label");
+    label.className = "merge-choice";
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "merge-survivor";
+    radio.value = String(card.id);
+    radio.checked = card.id === mergeSurvivorId;
+    radio.addEventListener("change", () => {
+      mergeSurvivorId = card.id;
+    });
+
+    const body = document.createElement("div");
+    body.className = "merge-choice-body";
+
+    const front = document.createElement("div");
+    front.className = "merge-choice-front";
+    front.textContent = card.front_md.replace(/\s+/g, " ").slice(0, 140);
+
+    const meta = document.createElement("div");
+    meta.className = "merge-choice-meta";
+    const status = window.cm.statusMeta(card.status);
+    meta.textContent = [
+      card.module_path ? card.module_path.replaceAll("/", " / ") : "未分类",
+      status.label,
+      card.anki_note_id ? `Anki note ${card.anki_note_id}` : "无 Anki note",
+    ].join(" · ");
+
+    body.append(front, meta);
+    label.append(radio, body);
+    mergeCardList.appendChild(label);
+  }
+}
+
+function renderMergeWarnings() {
+  const modules = new Set(mergeDetails.map((card) => card.module_path || ""));
+  const notes = mergeDetails.filter((card) => card.anki_note_id);
+  const warnings = [
+    "合并后保留卡会回到草稿状态，请确认背面或手动生成 AI 答案后再同步。",
+  ];
+  if (modules.size > 1) {
+    warnings.push("所选卡片来自多个模块，合并后保留卡仍留在原模块。");
+  }
+  if (notes.length > 0) {
+    warnings.push(
+      `共 ${notes.length} 张卡已关联 Anki note，合并后最多接管 1 个；其余 note 不会在 Anki 中自动删除，请手动处理。`,
+    );
+  }
+
+  mergeWarnings.replaceChildren();
+  for (const text of warnings) {
+    const p = document.createElement("p");
+    p.textContent = text;
+    mergeWarnings.appendChild(p);
+  }
+}
+
+async function openMergeModal() {
+  if (mergeBusy || selectedIds.size < 2) return;
+  mergeButton.disabled = true;
+  mergeButton.textContent = "加载所选卡片…";
+
+  try {
+    mergeDetails = await Promise.all(
+      [...selectedIds].map((id) => window.cm.fetchJSON(`/api/cards/${id}`)),
+    );
+  } catch (error) {
+    updateSelectionUI();
+    const failure = document.createElement("p");
+    failure.className = "merge-error";
+    failure.textContent = error.message || "加载所选卡片失败";
+    listBox.prepend(failure);
+    return;
+  }
+
+  mergeDetails.sort(
+    (a, b) =>
+      String(a.created_at || "").localeCompare(String(b.created_at || "")) ||
+      a.id - b.id,
+  );
+  mergeSurvivorId = mergeDetails[0].id;
+  renderMergeChoices();
+  renderMergeWarnings();
+  mergeModal.hidden = false;
+  updateSelectionUI();
+}
+
+function closeMergeModal() {
+  if (mergeBusy) return;
+  mergeModal.hidden = true;
+  mergeDetails = [];
+  mergeSurvivorId = null;
+  updateSelectionUI();
+}
+
+async function confirmMerge() {
+  if (mergeBusy || mergeSurvivorId === null) return;
+  const sourceIds = mergeDetails
+    .map((card) => card.id)
+    .filter((id) => id !== mergeSurvivorId);
+  if (sourceIds.length === 0) return;
+
+  mergeBusy = true;
+  mergeConfirm.disabled = true;
+  mergeConfirm.textContent = "合并中…";
+  try {
+    const result = await window.cm.fetchJSON("/api/cards/merge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        survivor_id: mergeSurvivorId,
+        source_ids: sourceIds,
+      }),
+    });
+    mergeModal.hidden = true;
+    selectedIds.clear();
+    window.location.href = `/cards/${result.card.id}`;
+  } catch (error) {
+    mergeWarnings.replaceChildren();
+    const failure = document.createElement("p");
+    failure.className = "merge-error";
+    failure.textContent = error.message || "合并失败";
+    mergeWarnings.appendChild(failure);
+  } finally {
+    mergeBusy = false;
+    mergeConfirm.disabled = false;
+    mergeConfirm.textContent = "确认合并";
+  }
+}
+
 treeAll.addEventListener("click", () => {
   state.moduleId = null;
   state.page = 1;
@@ -382,8 +553,18 @@ nextButton.addEventListener("click", () => {
 });
 
 aiBatchButton.addEventListener("click", runBatch);
+mergeButton.addEventListener("click", openMergeModal);
+mergeCancel.addEventListener("click", closeMergeModal);
+mergeConfirm.addEventListener("click", confirmMerge);
+mergeModal.addEventListener("click", (event) => {
+  if (event.target === mergeModal) closeMergeModal();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !mergeModal.hidden) closeMergeModal();
+});
 
 restoreState();
 syncControls();
+updateSelectionUI();
 loadModules();
 loadCards();

@@ -310,6 +310,156 @@ def resolve_batch(
     return {"resolved": resolved, "errors": errors}
 
 
+def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
+    """把手动多选的卡片并入一张存活卡，整次合并只留一条可撤销记录。"""
+    sources: list[int] = []
+    for raw in source_ids:
+        cid = int(raw)
+        if cid == survivor_id:
+            raise ReviewError("存活卡片不能同时作为被合并卡片")
+        if cid in sources:
+            raise ReviewError("被合并卡片重复")
+        sources.append(cid)
+    if not sources:
+        raise ReviewError("至少选择两张卡片才能合并")
+
+    all_ids = [survivor_id, *sources]
+    placeholders = ", ".join("?" for _ in all_ids)
+    source_placeholders = ", ".join("?" for _ in sources)
+
+    with closing(connect()) as conn, conn:
+        rows = {}
+        for cid in all_ids:
+            row = conn.execute(
+                "SELECT * FROM knowledge_point WHERE id = ?", (cid,)
+            ).fetchone()
+            if row is None:
+                raise ReviewError(f"卡片 {cid} 不存在", 404)
+            rows[cid] = row
+        survivor = rows[survivor_id]
+        source_rows = [rows[cid] for cid in sources]
+
+        kps = [dict(rows[cid]) for cid in all_ids]
+        mentions = _snapshot(
+            conn, "mention", f"WHERE kp_id IN ({source_placeholders})", tuple(sources)
+        )
+        syncs = _snapshot(
+            conn, "anki_sync", f"WHERE kp_id IN ({placeholders})", tuple(all_ids)
+        )
+        candidates = _snapshot(
+            conn,
+            "dup_candidate",
+            f"WHERE left_kp_id IN ({source_placeholders}) "
+            f"OR right_kp_id IN ({source_placeholders})",
+            (*sources, *sources),
+        )
+
+        note_id = survivor["anki_note_id"]
+        note_from = survivor_id if note_id is not None else None
+        if note_id is None:
+            note_cards = [row for row in source_rows if row["anki_note_id"] is not None]
+
+            def priority(row) -> tuple:
+                sync = conn.execute(
+                    "SELECT pushed_at FROM anki_sync WHERE kp_id = ?", (row["id"],)
+                ).fetchone()
+                return (
+                    1 if row["status"] == "ready" else 0,
+                    (sync["pushed_at"] or "") if sync is not None else "",
+                    row["updated_at"] or "",
+                )
+
+            if note_cards:
+                picked = max(note_cards, key=priority)
+                note_id = picked["anki_note_id"]
+                note_from = picked["id"]
+                picked_sync = conn.execute(
+                    "SELECT * FROM anki_sync WHERE kp_id = ?", (picked["id"],)
+                ).fetchone()
+                conn.execute("DELETE FROM anki_sync WHERE kp_id = ?", (survivor_id,))
+                if picked_sync is not None:
+                    conn.execute(
+                        "INSERT INTO anki_sync"
+                        "(kp_id, anki_note_id, pushed_hash, pushed_deck, pushed_at, last_error) "
+                        "VALUES(?, ?, NULL, ?, ?, ?)",
+                        (
+                            survivor_id,
+                            picked_sync["anki_note_id"],
+                            picked_sync["pushed_deck"],
+                            picked_sync["pushed_at"],
+                            picked_sync["last_error"],
+                        ),
+                    )
+
+        unclaimed = [
+            {
+                "kp_id": row["id"],
+                "note_id": row["anki_note_id"],
+                "front_md": row["front_md"],
+            }
+            for row in source_rows
+            if row["anki_note_id"] is not None and row["id"] != note_from
+        ]
+
+        merged_back = (survivor["back_md"] or "").strip()
+        sections = {merged_back} if merged_back else set()
+        for row in sorted(source_rows, key=lambda item: item["id"]):
+            part = (row["back_md"] or "").strip()
+            if not part or part in sections:
+                continue
+            sections.add(part)
+            merged_back = f"{merged_back}\n\n---\n\n{part}" if merged_back else part
+
+        now = utc_now()
+        payload = {
+            "action": "merge_cards",
+            "candidate": None,
+            "survivor_id": survivor_id,
+            "kps": kps,
+            "mentions": mentions,
+            "syncs": syncs,
+            "candidates": candidates,
+            "summary": {
+                "left_front": survivor["front_md"],
+                "right_front": " / ".join(row["front_md"] for row in source_rows),
+                "mention_text": None,
+            },
+        }
+        cursor = conn.execute(
+            "INSERT INTO review_action(candidate_id, action, payload, created_at) "
+            "VALUES(NULL, ?, ?, ?)",
+            ("merge_cards", json.dumps(payload, ensure_ascii=False), now),
+        )
+        action_id = cursor.lastrowid
+
+        conn.execute(
+            f"UPDATE mention SET kp_id = ?, status = 'attached' "
+            f"WHERE kp_id IN ({source_placeholders})",
+            (survivor_id, *sources),
+        )
+        conn.execute(
+            "UPDATE knowledge_point SET back_md = ?, status = 'draft', "
+            "anki_note_id = ?, updated_at = ? WHERE id = ?",
+            (merged_back, note_id, now, survivor_id),
+        )
+        conn.execute(
+            f"DELETE FROM knowledge_point WHERE id IN ({source_placeholders})",
+            tuple(sources),
+        )
+        conn.execute(
+            "UPDATE anki_sync SET pushed_hash = NULL WHERE kp_id = ?", (survivor_id,)
+        )
+
+    return {
+        "survivor_id": survivor_id,
+        "merged_ids": sources,
+        "action_id": action_id,
+        "anki_note_id": note_id,
+        "note_from": note_from,
+        "unclaimed_notes": unclaimed,
+    }
+
+
 def list_actions(page: int = 1, page_size: int = 10) -> dict:
     page = max(1, page)
     page_size = min(50, max(1, page_size))
@@ -370,7 +520,7 @@ def undo_action(action_id: int) -> dict:
         except json.JSONDecodeError as exc:
             raise ReviewError("操作快照损坏，无法撤销") from exc
 
-        if row["action"] == "merge":
+        if row["action"] in ("merge", "merge_cards"):
             kp_ids = [snapshot["id"] for snapshot in payload.get("kps") or []]
             if kp_ids:
                 conn.execute(
@@ -385,6 +535,8 @@ def undo_action(action_id: int) -> dict:
             _restore(conn, "mention", snapshot, "id")
         for snapshot in payload.get("syncs") or []:
             _restore(conn, "anki_sync", snapshot, "kp_id")
+        for snapshot in payload.get("candidates") or []:
+            _restore(conn, "dup_candidate", snapshot, "id")
 
         candidate = payload.get("candidate")
         if candidate:
