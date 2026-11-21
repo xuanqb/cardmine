@@ -20,11 +20,13 @@ _ACTIVE = ("queued", "running")
 
 class ResolveIn(BaseModel):
     action: str
+    keep_side: str = "left"
 
 
 class BatchIn(BaseModel):
     ids: list[int] = Field(min_length=1)
     action: str
+    keep_side: str = "left"
 
 
 @router.get("/dup-candidates")
@@ -40,7 +42,9 @@ def list_candidates(
 @router.post("/dup-candidates/{candidate_id}/resolve")
 def resolve_candidate(candidate_id: int, payload: ResolveIn) -> dict:
     try:
-        return review.resolve_candidate(candidate_id, payload.action)
+        return review.resolve_candidate(
+            candidate_id, payload.action, payload.keep_side
+        )
     except review.ReviewError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
@@ -48,7 +52,7 @@ def resolve_candidate(candidate_id: int, payload: ResolveIn) -> dict:
 @router.post("/dup-candidates/batch")
 def resolve_batch(payload: BatchIn) -> dict:
     try:
-        return review.resolve_batch(payload.ids, payload.action)
+        return review.resolve_batch(payload.ids, payload.action, payload.keep_side)
     except review.ReviewError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 

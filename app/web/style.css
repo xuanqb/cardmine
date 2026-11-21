@@ -1484,6 +1484,46 @@ a.mention-title:hover {
   font-size: 13px;
 }
 
+.keep-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.segmented {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.segmented button {
+  padding: 5px 14px;
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--border);
+}
+
+.segmented button:hover {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.segmented button.active,
+.segmented button.active:hover {
+  background: var(--brand);
+  color: #fff;
+}
+
 .action-list {
   display: flex;
   flex-direction: column;

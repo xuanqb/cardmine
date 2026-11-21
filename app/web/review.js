@@ -18,6 +18,7 @@ const batchButtons = {
 const state = { page: 1, pageSize: 10, total: 0, q: "", status: "pending" };
 const actionState = { page: 1, pageSize: 10, total: 0 };
 const selected = new Set();
+const keepSide = new Map();
 const ACTION_LABEL = { merge: "合并", keep: "保持独立", ignore: "忽略" };
 
 let toastTimer = null;
@@ -52,7 +53,17 @@ function badge(text, className) {
   return span;
 }
 
-function cardPane(item, side) {
+function getKeepSide(id) {
+  return keepSide.get(id) || "left";
+}
+
+function sideLabel(item, side, chosen) {
+  if (side === chosen) return side === "left" ? "左侧 · 保留" : "右侧 · 保留";
+  if (side === "left") return "左侧 · 合并后删除";
+  return item.mention_id ? "右侧 · 新卡" : "右侧 · 候选卡";
+}
+
+function cardPane(item, side, chosen) {
   const isLeft = side === "left";
   const pane = document.createElement("div");
   pane.className = "compare-pane";
@@ -61,11 +72,7 @@ function cardPane(item, side) {
   head.className = "compare-head";
   const label = document.createElement("span");
   label.className = "compare-label";
-  label.textContent = isLeft
-    ? "左侧 · 保留"
-    : item.mention_id
-      ? "右侧 · 新卡"
-      : "右侧 · 候选卡";
+  label.textContent = sideLabel(item, side, chosen);
   const meta = statusMeta(isLeft ? item.left_status : item.right_status);
   head.append(label, badge(meta.label, meta.className));
 
@@ -111,10 +118,57 @@ function candidateActions(item) {
   return actions;
 }
 
+function keepSideControl(item, leftPane, rightPane) {
+  const row = document.createElement("div");
+  row.className = "keep-side";
+
+  const label = document.createElement("span");
+  label.textContent = "合并后保留";
+
+  const group = document.createElement("div");
+  group.className = "segmented";
+  const buttons = [];
+
+  const update = (side) => {
+    keepSide.set(item.id, side);
+    for (const button of buttons) {
+      button.classList.toggle("active", button.dataset.side === side);
+    }
+    leftPane.querySelector(".compare-label").textContent = sideLabel(
+      item,
+      "left",
+      side,
+    );
+    rightPane.querySelector(".compare-label").textContent = sideLabel(
+      item,
+      "right",
+      side,
+    );
+  };
+
+  for (const [value, text] of [
+    ["left", "左侧"],
+    ["right", "右侧"],
+  ]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.side = value;
+    button.textContent = text;
+    button.classList.toggle("active", getKeepSide(item.id) === value);
+    button.addEventListener("click", () => update(value));
+    buttons.push(button);
+    group.append(button);
+  }
+
+  row.append(label, group);
+  return row;
+}
+
 function renderCandidate(item) {
   const card = document.createElement("article");
   card.className = "candidate";
   card.dataset.id = String(item.id);
+  const chosen = getKeepSide(item.id);
 
   const head = document.createElement("div");
   head.className = "candidate-head";
@@ -145,7 +199,9 @@ function renderCandidate(item) {
 
   const compare = document.createElement("div");
   compare.className = "compare-grid";
-  compare.append(cardPane(item, "left"), cardPane(item, "right"));
+  const leftPane = cardPane(item, "left", chosen);
+  const rightPane = cardPane(item, "right", chosen);
+  compare.append(leftPane, rightPane);
 
   const reason = document.createElement("p");
   reason.className = "candidate-reason";
@@ -169,6 +225,7 @@ function renderCandidate(item) {
 
   card.append(reason);
   if (item.status === "pending") {
+    card.append(keepSideControl(item, leftPane, rightPane));
     card.append(candidateActions(item));
   }
   return card;
@@ -231,9 +288,13 @@ async function resolveOne(candidateId, action) {
     await fetchJSON(`/api/dup-candidates/${candidateId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({
+        action,
+        keep_side: getKeepSide(candidateId),
+      }),
     });
     selected.delete(candidateId);
+    keepSide.delete(candidateId);
     showToast(`已${ACTION_LABEL[action] || "处理"}`);
     actionState.page = 1;
     await Promise.all([loadCandidates(), loadActions()]);

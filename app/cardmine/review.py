@@ -122,7 +122,9 @@ def _restore(conn, table: str, row: dict, key: str) -> None:
     )
 
 
-def _resolve(conn, candidate, action: str) -> dict:
+def _resolve(conn, candidate, action: str, keep_side: str = "left") -> dict:
+    if keep_side not in ("left", "right"):
+        raise ReviewError("不支持的保留方向")
     left_id = candidate["left_kp_id"]
     right_id = candidate["right_kp_id"]
     mention_id = candidate["mention_id"]
@@ -136,9 +138,14 @@ def _resolve(conn, candidate, action: str) -> dict:
     if left is None or right is None:
         raise ReviewError("候选关联的卡片已不存在", 409)
 
+    survivor = left if keep_side == "left" else right
+    discarded = right if keep_side == "left" else left
+    survivor_id = survivor["id"]
+    discarded_id = discarded["id"]
+
     if action == "merge":
         kps = [dict(left), dict(right)]
-        mentions = _snapshot(conn, "mention", "WHERE kp_id = ?", (right_id,))
+        mentions = _snapshot(conn, "mention", "WHERE kp_id = ?", (discarded_id,))
         syncs = _snapshot(
             conn, "anki_sync", "WHERE kp_id IN (?, ?)", (left_id, right_id)
         )
@@ -182,57 +189,59 @@ def _resolve(conn, candidate, action: str) -> dict:
     action_id = cursor.lastrowid
 
     if action == "merge":
-        merged_back = left["back_md"] or ""
-        if right["back_md"] and right["back_md"].strip() != merged_back.strip():
+        merged_back = survivor["back_md"] or ""
+        if discarded["back_md"] and discarded["back_md"].strip() != merged_back.strip():
             merged_back = (
-                f"{merged_back.rstrip()}\n\n---\n\n{right['back_md'].strip()}"
+                f"{merged_back.rstrip()}\n\n---\n\n{discarded['back_md'].strip()}"
                 if merged_back.strip()
-                else right["back_md"].strip()
+                else discarded["back_md"].strip()
             )
 
         conn.execute(
             "UPDATE mention SET kp_id = ?, status = 'attached' WHERE kp_id = ?",
-            (left_id, right_id),
+            (survivor_id, discarded_id),
         )
 
-        note_id = left["anki_note_id"]
-        if note_id is None and right["anki_note_id"] is not None:
-            note_id = right["anki_note_id"]
-            left_sync = conn.execute(
-                "SELECT 1 FROM anki_sync WHERE kp_id = ?", (left_id,)
+        note_id = survivor["anki_note_id"]
+        if note_id is None and discarded["anki_note_id"] is not None:
+            note_id = discarded["anki_note_id"]
+            survivor_sync = conn.execute(
+                "SELECT 1 FROM anki_sync WHERE kp_id = ?", (survivor_id,)
             ).fetchone()
-            if left_sync is None:
-                right_sync = conn.execute(
-                    "SELECT * FROM anki_sync WHERE kp_id = ?", (right_id,)
+            if survivor_sync is None:
+                discarded_sync = conn.execute(
+                    "SELECT * FROM anki_sync WHERE kp_id = ?", (discarded_id,)
                 ).fetchone()
-                if right_sync is not None:
-                    conn.execute("DELETE FROM anki_sync WHERE kp_id = ?", (right_id,))
+                if discarded_sync is not None:
+                    conn.execute(
+                        "DELETE FROM anki_sync WHERE kp_id = ?", (discarded_id,)
+                    )
                     conn.execute(
                         "INSERT INTO anki_sync"
                         "(kp_id, anki_note_id, pushed_hash, pushed_deck, pushed_at, last_error) "
                         "VALUES(?, ?, NULL, ?, ?, ?)",
                         (
-                            left_id,
-                            right_sync["anki_note_id"],
-                            right_sync["pushed_deck"],
-                            right_sync["pushed_at"],
-                            right_sync["last_error"],
+                            survivor_id,
+                            discarded_sync["anki_note_id"],
+                            discarded_sync["pushed_deck"],
+                            discarded_sync["pushed_at"],
+                            discarded_sync["last_error"],
                         ),
                     )
 
-        status = left["status"]
+        status = survivor["status"]
         if merged_back.strip() and status == "draft":
             status = "ready"
 
         conn.execute(
             "UPDATE knowledge_point SET back_md = ?, status = ?, anki_note_id = ?, "
             "updated_at = ? WHERE id = ?",
-            (merged_back, status, note_id, now, left_id),
+            (merged_back, status, note_id, now, survivor_id),
         )
         conn.execute(
-            "UPDATE anki_sync SET pushed_hash = NULL WHERE kp_id = ?", (left_id,)
+            "UPDATE anki_sync SET pushed_hash = NULL WHERE kp_id = ?", (survivor_id,)
         )
-        conn.execute("DELETE FROM knowledge_point WHERE id = ?", (right_id,))
+        conn.execute("DELETE FROM knowledge_point WHERE id = ?", (discarded_id,))
 
     elif action == "keep":
         if mention_id is not None:
@@ -264,7 +273,9 @@ def _resolve(conn, candidate, action: str) -> dict:
     return {"action_id": action_id}
 
 
-def resolve_candidate(candidate_id: int, action: str) -> dict:
+def resolve_candidate(
+    candidate_id: int, action: str, keep_side: str = "left"
+) -> dict:
     if action not in ACTIONS:
         raise ReviewError("不支持的操作")
     with closing(connect()) as conn, conn:
@@ -275,11 +286,13 @@ def resolve_candidate(candidate_id: int, action: str) -> dict:
             raise ReviewError("候选不存在", 404)
         if candidate["status"] != "pending":
             raise ReviewError("该候选已处理")
-        result = _resolve(conn, candidate, action)
+        result = _resolve(conn, candidate, action, keep_side)
     return {"candidate_id": candidate_id, "action": action, **result}
 
 
-def resolve_batch(candidate_ids: list[int], action: str) -> dict:
+def resolve_batch(
+    candidate_ids: list[int], action: str, keep_side: str = "left"
+) -> dict:
     if action not in ACTIONS:
         raise ReviewError("不支持的操作")
     resolved: list[int] = []
@@ -290,7 +303,7 @@ def resolve_batch(candidate_ids: list[int], action: str) -> dict:
             continue
         seen.add(candidate_id)
         try:
-            resolve_candidate(candidate_id, action)
+            resolve_candidate(candidate_id, action, keep_side)
             resolved.append(candidate_id)
         except ReviewError as exc:
             errors.append({"id": candidate_id, "error": str(exc)})
@@ -356,6 +369,15 @@ def undo_action(action_id: int) -> dict:
             payload = json.loads(row["payload"])
         except json.JSONDecodeError as exc:
             raise ReviewError("操作快照损坏，无法撤销") from exc
+
+        if row["action"] == "merge":
+            kp_ids = [snapshot["id"] for snapshot in payload.get("kps") or []]
+            if kp_ids:
+                conn.execute(
+                    "DELETE FROM anki_sync WHERE kp_id IN "
+                    f"({', '.join('?' for _ in kp_ids)})",
+                    kp_ids,
+                )
 
         for snapshot in payload.get("kps") or []:
             _restore(conn, "knowledge_point", snapshot, "id")
