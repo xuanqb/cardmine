@@ -1,8 +1,9 @@
 """AI 答案建议稿接口：单卡生成、草稿批量生成、任务进度与清空。"""
 
+import asyncio
 import threading
 import uuid
-from contextlib import closing
+from contextlib import closing, suppress
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/api", tags=["ai-answer"])
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
+_tasks: dict[int, asyncio.Task] = {}
 _ACTIVE = ("queued", "running")
 
 
@@ -56,10 +58,28 @@ def _draft_ids(conn, module_id: int | None, limit: int, force: bool) -> list[int
 
 
 @router.post("/cards/{card_id}/ai-answer")
-def generate_answer(card_id: int, force: bool = True) -> dict:
+async def generate_answer(card_id: int, force: bool = True) -> dict:
     settings = load_settings()
+    running = _tasks.get(card_id)
+    if running is not None and not running.done():
+        raise HTTPException(status_code=409, detail="该卡片正在生成 AI 答案，请先取消")
+
+    task = asyncio.create_task(
+        answer.generate_for_card_async(settings, card_id, force=force)
+    )
+    _tasks[card_id] = task
+
+    def forget(_task: asyncio.Task) -> None:
+        if _tasks.get(card_id) is task:
+            _tasks.pop(card_id, None)
+
+    task.add_done_callback(forget)
     try:
-        answer.generate_for_card(settings, card_id, force=force)
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if task.cancelled():
+            return {"card_id": card_id, "cancelled": True}
+        raise
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -67,6 +87,17 @@ def generate_answer(card_id: int, force: bool = True) -> dict:
     except AIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return get_card(card_id)
+
+
+@router.post("/cards/{card_id}/ai-answer/cancel")
+async def cancel_answer(card_id: int) -> dict:
+    task = _tasks.get(card_id)
+    if task is None or task.done():
+        raise HTTPException(status_code=404, detail="该卡片没有正在进行的生成")
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    return {"card_id": card_id, "cancelled": True}
 
 
 @router.delete("/cards/{card_id}/ai-answer")

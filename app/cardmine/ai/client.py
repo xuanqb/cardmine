@@ -1,9 +1,12 @@
 """OpenAI 兼容的 Chat / Embedding 客户端，带指数退避重试。"""
 
+import asyncio
 import json
 import time
 import urllib.error
 import urllib.request
+
+import httpx
 
 
 class AIError(Exception):
@@ -106,9 +109,7 @@ class AIClient:
                     time.sleep(2**attempt)
         raise AIError(f"AI 调用失败（重试 {retries} 次）: {last}")
 
-    def chat_text(
-        self, system: str, user: str, retries: int = 3, temperature: float = 0.3
-    ) -> str:
+    def _text_payload(self, system: str, user: str, temperature: float) -> dict:
         payload = {
             "model": self.chat_model,
             "messages": [
@@ -119,6 +120,12 @@ class AIClient:
         }
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
+        return payload
+
+    def chat_text(
+        self, system: str, user: str, retries: int = 3, temperature: float = 0.3
+    ) -> str:
+        payload = self._text_payload(system, user, temperature)
         last: Exception | None = None
         for attempt in range(retries):
             try:
@@ -131,6 +138,45 @@ class AIClient:
                 last = exc
                 if attempt + 1 < retries:
                     time.sleep(2**attempt)
+        raise AIError(f"AI 调用失败（重试 {retries} 次）: {last}")
+
+    async def chat_text_async(
+        self, system: str, user: str, retries: int = 3, temperature: float = 0.3
+    ) -> str:
+        """异步版本，任务被取消时立即中断在途 HTTP 请求。"""
+        payload = self._text_payload(system, user, temperature)
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        last: Exception | None = None
+        async with httpx.AsyncClient(timeout=180) as http:
+            for attempt in range(retries):
+                try:
+                    response = await http.post(
+                        f"{self.base_url}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    content = data["choices"][0]["message"]["content"]
+                    if not (content or "").strip():
+                        raise AIError("模型返回空内容")
+                    return content
+                except httpx.HTTPStatusError as exc:
+                    body = exc.response.text[:300]
+                    last = AIError(
+                        f"AI 服务返回 HTTP {exc.response.status_code}: {body}"
+                    )
+                except httpx.TimeoutException as exc:
+                    last = AIError("AI 服务响应超时")
+                except httpx.HTTPError as exc:
+                    last = AIError(f"无法连接 AI 服务: {exc}")
+                except (AIError, KeyError, IndexError, TypeError, ValueError) as exc:
+                    last = exc
+                if attempt + 1 < retries:
+                    await asyncio.sleep(2**attempt)
         raise AIError(f"AI 调用失败（重试 {retries} 次）: {last}")
 
     def embed(self, texts: list[str]) -> list[list[float]]:

@@ -4,6 +4,7 @@
 必须由人工在编辑页采用后才会进入正式背面。
 """
 
+import asyncio
 import threading
 from contextlib import closing
 from typing import Callable
@@ -87,6 +88,18 @@ def generate_answer(client: AIClient, card: dict, variants: list[dict]) -> str:
     return answer
 
 
+async def generate_answer_async(
+    client: AIClient, card: dict, variants: list[dict]
+) -> str:
+    text = await client.chat_text_async(
+        SYSTEM_PROMPT, build_user_prompt(card, variants)
+    )
+    answer = _clean_answer(text)
+    if not answer:
+        raise AIError("模型返回空答案")
+    return answer
+
+
 def _load_card(conn, card_id: int):
     row = conn.execute(
         """
@@ -111,7 +124,8 @@ def _load_card(conn, card_id: int):
     return row, [dict(item) for item in variants]
 
 
-def _generate_with_client(client: AIClient, card_id: int, force: bool) -> dict:
+def _prepare_card(card_id: int, force: bool):
+    """校验卡片并标记为生成中，返回 (card, variants)；需要跳过时返回 None。"""
     with closing(connect()) as conn, conn:
         card, variants = _load_card(conn, card_id)
         if card is None:
@@ -119,31 +133,74 @@ def _generate_with_client(client: AIClient, card_id: int, force: bool) -> dict:
         if card["status"] != "draft" and not force:
             raise ValueError("只有草稿卡片可以生成 AI 答案")
         if (card["ai_back_md"] or "").strip() and not force:
-            return {"card_id": card_id, "skipped": True}
+            return None
         conn.execute(
             "UPDATE knowledge_point SET ai_status = 'running', ai_error = NULL "
             "WHERE id = ?",
             (card_id,),
         )
-        card = dict(card)
+        return dict(card), variants
 
-    try:
-        answer = generate_answer(client, card, variants)
-    except AIError as exc:
-        with closing(connect()) as conn, conn:
-            conn.execute(
-                "UPDATE knowledge_point SET ai_status = 'failed', ai_error = ? "
-                "WHERE id = ?",
-                (str(exc)[:500], card_id),
-            )
-        raise
 
+def _save_answer(card_id: int, answer: str) -> None:
     with closing(connect()) as conn, conn:
         conn.execute(
             "UPDATE knowledge_point SET ai_back_md = ?, ai_status = 'done', "
             "ai_error = NULL, ai_generated_at = ? WHERE id = ?",
             (answer, utc_now(), card_id),
         )
+
+
+def _mark_failed(card_id: int, message: str) -> None:
+    with closing(connect()) as conn, conn:
+        conn.execute(
+            "UPDATE knowledge_point SET ai_status = 'failed', ai_error = ? "
+            "WHERE id = ?",
+            (message[:500], card_id),
+        )
+
+
+def _reset_running(card_id: int) -> None:
+    """取消后恢复状态：保留已有答案标记为 done，否则回到 none。"""
+    with closing(connect()) as conn, conn:
+        conn.execute(
+            "UPDATE knowledge_point SET ai_status = "
+            "CASE WHEN TRIM(COALESCE(ai_back_md, '')) = '' THEN 'none' ELSE 'done' END, "
+            "ai_error = NULL WHERE id = ? AND ai_status = 'running'",
+            (card_id,),
+        )
+
+
+def _generate_with_client(client: AIClient, card_id: int, force: bool) -> dict:
+    prepared = _prepare_card(card_id, force)
+    if prepared is None:
+        return {"card_id": card_id, "skipped": True}
+    card, variants = prepared
+    try:
+        answer = generate_answer(client, card, variants)
+    except AIError as exc:
+        _mark_failed(card_id, str(exc))
+        raise
+    _save_answer(card_id, answer)
+    return {"card_id": card_id, "skipped": False}
+
+
+async def _generate_with_client_async(
+    client: AIClient, card_id: int, force: bool
+) -> dict:
+    prepared = _prepare_card(card_id, force)
+    if prepared is None:
+        return {"card_id": card_id, "skipped": True}
+    card, variants = prepared
+    try:
+        answer = await generate_answer_async(client, card, variants)
+    except asyncio.CancelledError:
+        _reset_running(card_id)
+        raise
+    except AIError as exc:
+        _mark_failed(card_id, str(exc))
+        raise
+    _save_answer(card_id, answer)
     return {"card_id": card_id, "skipped": False}
 
 
@@ -152,6 +209,15 @@ def generate_for_card(settings: dict, card_id: int, force: bool = False) -> dict
     if not client.configured:
         raise AIError("未配置 AI 模型，请先在设置页填写")
     return _generate_with_client(client, card_id, force)
+
+
+async def generate_for_card_async(
+    settings: dict, card_id: int, force: bool = False
+) -> dict:
+    client = _client(settings)
+    if not client.configured:
+        raise AIError("未配置 AI 模型，请先在设置页填写")
+    return await _generate_with_client_async(client, card_id, force)
 
 
 def run_batch(

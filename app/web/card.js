@@ -13,6 +13,7 @@ const aiMeta = document.getElementById("ai-meta");
 const aiBody = document.getElementById("ai-body");
 const aiError = document.getElementById("ai-error");
 const aiGenerate = document.getElementById("ai-generate");
+const aiCancel = document.getElementById("ai-cancel");
 const aiAdopt = document.getElementById("ai-adopt");
 const aiAppend = document.getElementById("ai-append");
 const aiClear = document.getElementById("ai-clear");
@@ -22,6 +23,7 @@ let editor = null;
 let markdown = null;
 let toastTimer = null;
 let aiBusy = false;
+let aiController = null;
 
 function showToast(message, isError = false) {
   toast.textContent = message;
@@ -105,9 +107,11 @@ function renderAI() {
   aiClear.hidden = !hasAnswer;
   aiGenerate.disabled = aiBusy;
   aiGenerate.textContent = hasAnswer ? "重新生成" : "生成 AI 答案";
+  aiCancel.hidden = !aiBusy;
+  aiCancel.disabled = !aiBusy;
 
   if (aiBusy) {
-    aiMeta.textContent = "生成中，通常需要几十秒…";
+    aiMeta.textContent = "生成中，可随时取消…";
     return;
   }
   if (status === "failed") {
@@ -249,21 +253,49 @@ async function save(statusOverride) {
 async function generateAI() {
   if (aiBusy) return;
   aiBusy = true;
+  const controller = new AbortController();
+  aiController = controller;
   renderAI();
   try {
     card = await window.cm.fetchJSON(`/api/cards/${cardId}/ai-answer`, {
       method: "POST",
+      signal: controller.signal,
     });
     showToast("AI 答案已生成");
   } catch (error) {
+    if (error.name !== "AbortError") {
+      try {
+        card = await window.cm.fetchJSON(`/api/cards/${cardId}`);
+      } catch (ignored) {
+        /* 保留原卡片状态 */
+      }
+      showToast(error.message || "生成失败", true);
+    }
+  } finally {
+    if (aiController === controller) aiController = null;
+    aiBusy = false;
+    renderAI();
+  }
+}
+
+async function cancelAI() {
+  if (!aiBusy) return;
+  aiCancel.disabled = true;
+  const controller = aiController;
+  try {
+    await window.cm.fetchJSON(`/api/cards/${cardId}/ai-answer/cancel`, {
+      method: "POST",
+    });
+    showToast("已取消生成");
+  } catch (error) {
+    showToast(error.message || "取消失败", true);
+  } finally {
+    if (controller) controller.abort();
     try {
       card = await window.cm.fetchJSON(`/api/cards/${cardId}`);
     } catch (ignored) {
       /* 保留原卡片状态 */
     }
-    showToast(error.message || "生成失败", true);
-  } finally {
-    aiBusy = false;
     renderAI();
   }
 }
@@ -333,6 +365,7 @@ async function init() {
     saveButton.addEventListener("click", () => save());
     saveReadyButton.addEventListener("click", () => save("ready"));
     aiGenerate.addEventListener("click", generateAI);
+    aiCancel.addEventListener("click", cancelAI);
     aiAdopt.addEventListener("click", adoptAI);
     aiAppend.addEventListener("click", appendAI);
     aiClear.addEventListener("click", clearAI);
