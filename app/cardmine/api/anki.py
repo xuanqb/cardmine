@@ -2,9 +2,10 @@ import threading
 import uuid
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from .. import config
-from ..anki import AnkiClient, AnkiError, push, sync_anki, takeover
+from ..anki import AnkiClient, AnkiError, audit, push, sync_anki, takeover
 from ..anki.service import summary
 from ..db import connect, utc_now
 from .settings import load_settings
@@ -59,6 +60,8 @@ def _run_job(job_id: str, action: str, settings: dict) -> None:
     try:
         if action == "takeover":
             result = takeover(client, settings["anki_model"], progress)
+        elif action == "audit":
+            result = audit(client, settings["anki_model"], progress)
         elif action == "push":
             result = push(
                 client,
@@ -177,6 +180,29 @@ def get_status() -> dict:
 @router.post("/takeover")
 def start_takeover() -> dict:
     return _start("takeover")
+
+
+@router.post("/audit")
+def start_audit() -> dict:
+    return _start("audit")
+
+
+class NoteDeleteIn(BaseModel):
+    note_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+@router.post("/notes/delete")
+def delete_notes(payload: NoteDeleteIn) -> dict:
+    note_ids = list(dict.fromkeys(payload.note_ids))
+    settings = load_settings()
+    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
+    try:
+        client.call("deleteNotes", timeout=15, notes=note_ids)
+    except (AnkiError, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Anki 删除失败：{exc}"
+        ) from exc
+    return {"deleted": note_ids}
 
 
 @router.post("/push")

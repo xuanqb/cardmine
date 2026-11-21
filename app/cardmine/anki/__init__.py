@@ -1,4 +1,4 @@
 from .client import AnkiClient, AnkiError
-from .service import push, sync_anki, takeover
+from .service import audit, push, sync_anki, takeover
 
-__all__ = ["AnkiClient", "AnkiError", "push", "sync_anki", "takeover"]
+__all__ = ["AnkiClient", "AnkiError", "audit", "push", "sync_anki", "takeover"]

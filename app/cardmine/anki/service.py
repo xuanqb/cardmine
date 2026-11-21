@@ -14,6 +14,7 @@ from .backup import backup_anki
 from .client import AnkiClient, AnkiError
 
 Progress = Callable[[str, int, int], None]
+AUDIT_LIMIT = 500
 MARKDOWN_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
 REMOTE_PREFIXES = ("http://", "https://", "//", "/")
@@ -129,6 +130,133 @@ def takeover(client: AnkiClient, model_name: str, progress: Progress | None = No
         "matched": len(matches),
         "unmatched_local": len(pending),
         "unmatched_anki": max(0, scanned - len(matches)),
+        "errors": errors,
+    }
+
+
+def _note_preview(fields: dict, key: str) -> str:
+    value = (fields.get(key) or {}).get("value", "")
+    return _plain_text(anki_to_markdown(value))[:120]
+
+
+def audit(
+    client: AnkiClient,
+    model_name: str,
+    progress: Progress | None = None,
+) -> dict:
+    """体检：找出 Anki 有但系统无的孤儿 note，以及系统有但 Anki 已删除的关联。"""
+    _notify(progress, "校验 Anki", 0, 1)
+    client.validate(model_name)
+    _notify(progress, "校验 Anki", 1, 1)
+
+    with closing(connect()) as conn:
+        decks = {
+            _deck_name(row["path"])
+            for row in conn.execute("SELECT path FROM module")
+            if row["path"]
+        }
+        decks.update(
+            row["deck"]
+            for row in conn.execute(
+                "SELECT DISTINCT pushed_deck AS deck FROM anki_sync "
+                "WHERE pushed_deck IS NOT NULL AND pushed_deck != ''"
+            )
+        )
+        db_notes = {
+            row["anki_note_id"]: dict(row)
+            for row in conn.execute(
+                """
+                SELECT kp.id, kp.anki_note_id, kp.front_md, kp.status,
+                       m.path AS module_path
+                FROM knowledge_point kp
+                LEFT JOIN module m ON m.id = kp.module_id
+                WHERE kp.anki_note_id IS NOT NULL
+                """
+            )
+        }
+
+    errors: list[str] = []
+    note_decks: dict[int, str] = {}
+    ordered_decks = sorted(decks)
+    for index, deck in enumerate(ordered_decks, start=1):
+        try:
+            found = client.call(
+                "findNotes", query=f'deck:"{_search_escape(deck)}"'
+            )
+            for note_id in found:
+                note_decks[int(note_id)] = deck
+        except AnkiError as exc:
+            errors.append(f"{deck}: {exc}")
+        _notify(progress, "扫描牌组", index, len(ordered_decks))
+
+    ordered = sorted(note_decks)
+    infos_by_id: dict[int, dict] = {}
+    for offset in range(0, len(ordered), 500):
+        chunk = ordered[offset : offset + 500]
+        try:
+            infos = client.call("notesInfo", notes=chunk)
+        except AnkiError as exc:
+            errors.append(f"读取笔记失败: {exc}")
+            continue
+        for info in infos:
+            if info and info.get("modelName"):
+                infos_by_id[int(info["noteId"])] = info
+        _notify(progress, "读取笔记", min(offset + 500, len(ordered)), len(ordered))
+
+    orphans = []
+    for note_id in sorted(infos_by_id, reverse=True):
+        info = infos_by_id[note_id]
+        if note_id in db_notes or info["modelName"] != model_name:
+            continue
+        fields = info.get("fields") or {}
+        orphans.append(
+            {
+                "note_id": note_id,
+                "deck": note_decks.get(note_id, ""),
+                "model": info["modelName"],
+                "front": _note_preview(fields, "Front"),
+                "back": _note_preview(fields, "Back"),
+            }
+        )
+
+    db_ids = sorted(db_notes)
+    present: set[int] = set()
+    for offset in range(0, len(db_ids), 500):
+        chunk = db_ids[offset : offset + 500]
+        try:
+            infos = client.call("notesInfo", notes=chunk)
+        except AnkiError as exc:
+            errors.append(f"核对关联失败: {exc}")
+            continue
+        for info in infos:
+            if info and info.get("modelName"):
+                present.add(int(info["noteId"]))
+        _notify(progress, "核对关联", min(offset + 500, len(db_ids)), len(db_ids))
+
+    missing = []
+    for note_id in db_ids:
+        if note_id in present:
+            continue
+        row = db_notes[note_id]
+        missing.append(
+            {
+                "kp_id": row["id"],
+                "note_id": note_id,
+                "front": _plain_text(row["front_md"] or "")[:120],
+                "module_path": row["module_path"] or "",
+                "status": row["status"],
+            }
+        )
+
+    return {
+        "decks": ordered_decks,
+        "model": model_name,
+        "scanned_notes": len(infos_by_id),
+        "system_notes": len(db_ids),
+        "orphan_total": len(orphans),
+        "missing_total": len(missing),
+        "orphans": orphans[:AUDIT_LIMIT],
+        "missing": missing[:AUDIT_LIMIT],
         "errors": errors,
     }
 

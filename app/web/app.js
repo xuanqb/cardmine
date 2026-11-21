@@ -7,10 +7,12 @@ const ankiBox = document.querySelector(".sync-state");
 const ankiAlert = document.getElementById("anki-alert");
 const ankiProgress = document.getElementById("anki-progress");
 const ankiReport = document.getElementById("anki-report");
+const auditResult = document.getElementById("audit-result");
 const jobButtons = [
   document.getElementById("anki-takeover"),
   document.getElementById("anki-push"),
   document.getElementById("anki-sync"),
+  document.getElementById("anki-audit"),
 ];
 
 const RESULT_LABELS = {
@@ -239,6 +241,220 @@ function renderReport(result) {
   }
 }
 
+function auditSection(title, total, shown) {
+  const section = document.createElement("div");
+  section.className = "audit-section";
+
+  const head = document.createElement("div");
+  head.className = "audit-head";
+  const heading = document.createElement("h3");
+  heading.textContent = total > 0 ? `${title}（${total}）` : title;
+  head.append(heading);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  if (total > shown) {
+    hint.textContent = `共 ${total} 条，仅显示前 ${shown} 条。`;
+  }
+  section.append(head);
+  if (hint.textContent) section.append(hint);
+  return section;
+}
+
+async function deleteAuditNotes(noteIds) {
+  if (noteIds.length === 0) return;
+  const ok = window.confirm(
+    `将永久删除 ${noteIds.length} 条 Anki note，删除后无法恢复。确认继续？`,
+  );
+  if (!ok) return;
+
+  try {
+    await fetchJSON("/api/anki/notes/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note_ids: noteIds }),
+    });
+    showToast(`已删除 ${noteIds.length} 条 note`);
+    startJob("audit", renderAudit);
+  } catch (error) {
+    showToast(error.message || "删除失败", true);
+  }
+}
+
+function renderOrphans(result) {
+  const orphans = result.orphans || [];
+  const section = auditSection(
+    "Anki 有、系统无",
+    result.orphan_total || 0,
+    orphans.length,
+  );
+
+  if (orphans.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "没有发现孤儿 note。";
+    section.append(empty);
+    return section;
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "audit-actions";
+
+  const selectLabel = document.createElement("label");
+  selectLabel.className = "checkbox";
+  const selectAll = document.createElement("input");
+  selectAll.type = "checkbox";
+  const selectText = document.createElement("span");
+  selectText.textContent = "全选";
+  selectLabel.append(selectAll, selectText);
+
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "danger";
+  deleteButton.textContent = "删除所选";
+  deleteButton.disabled = true;
+  actions.append(selectLabel, deleteButton);
+  section.querySelector(".audit-head").append(actions);
+
+  const list = document.createElement("div");
+  list.className = "audit-list";
+  const boxes = [];
+
+  function syncSelection() {
+    const selected = boxes.filter((box) => box.checked);
+    deleteButton.disabled = selected.length === 0;
+    deleteButton.textContent = selected.length
+      ? `删除所选（${selected.length}）`
+      : "删除所选";
+    selectAll.checked = selected.length === boxes.length;
+    selectAll.indeterminate =
+      selected.length > 0 && selected.length < boxes.length;
+  }
+
+  for (const item of orphans) {
+    const row = document.createElement("label");
+    row.className = "audit-row";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = String(item.note_id);
+    box.addEventListener("change", syncSelection);
+    boxes.push(box);
+
+    const main = document.createElement("span");
+    main.className = "audit-main";
+    const front = document.createElement("span");
+    front.className = "audit-front";
+    front.textContent = item.front || "（空正面）";
+    const meta = document.createElement("span");
+    meta.className = "audit-meta";
+    meta.textContent = `note ${item.note_id} · ${item.deck || "未知牌组"} · ${item.model}`;
+    main.append(front, meta);
+    row.append(box, main);
+    list.append(row);
+  }
+
+  selectAll.addEventListener("change", () => {
+    for (const box of boxes) box.checked = selectAll.checked;
+    syncSelection();
+  });
+  deleteButton.addEventListener("click", () => {
+    const ids = boxes
+      .filter((box) => box.checked)
+      .map((box) => Number(box.value));
+    deleteAuditNotes(ids);
+  });
+
+  section.append(list);
+  return section;
+}
+
+function renderMissing(result) {
+  const missing = result.missing || [];
+  const section = auditSection(
+    "系统有、Anki 无",
+    result.missing_total || 0,
+    missing.length,
+  );
+
+  if (missing.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "没有发现失效关联。";
+    section.append(empty);
+    return section;
+  }
+
+  const list = document.createElement("div");
+  list.className = "audit-list";
+  for (const item of missing) {
+    const row = document.createElement("a");
+    row.className = "audit-row";
+    row.href = `/cards/${item.kp_id}`;
+
+    const main = document.createElement("span");
+    main.className = "audit-main";
+    const front = document.createElement("span");
+    front.className = "audit-front";
+    front.textContent = item.front || "（空正面）";
+    const meta = document.createElement("span");
+    meta.className = "audit-meta";
+    const parts = [
+      `卡片 #${item.kp_id}`,
+      `note ${item.note_id}`,
+      item.module_path ? item.module_path.replaceAll("/", " / ") : "未分类",
+      item.status,
+    ];
+    meta.textContent = parts.join(" · ");
+    main.append(front, meta);
+    row.append(main);
+    list.append(row);
+  }
+  section.append(list);
+  return section;
+}
+
+function renderAudit(result) {
+  auditResult.replaceChildren();
+  auditResult.hidden = false;
+  if (!result) return;
+
+  const summary = document.createElement("p");
+  summary.className = "audit-summary";
+  summary.textContent =
+    `扫描 ${result.scanned_notes} 条 Anki note · 系统关联 ${result.system_notes} 条 · ` +
+    `孤儿 ${result.orphan_total} 条 · 失效 ${result.missing_total} 条`;
+  auditResult.append(summary);
+
+  const decks = result.decks || [];
+  const scope = document.createElement("p");
+  scope.className = "hint";
+  const deckText = decks.length
+    ? `${decks.slice(0, 4).join("、")}${decks.length > 4 ? ` 等 ${decks.length} 个牌组` : ""}`
+    : "未配置模块牌组";
+  scope.textContent = `范围：${deckText} · 模型 ${result.model}`;
+  auditResult.append(scope);
+
+  auditResult.append(renderOrphans(result), renderMissing(result));
+
+  const errors = result.errors || [];
+  if (errors.length) {
+    const detail = document.createElement("div");
+    detail.className = "report-detail";
+    const head = document.createElement("p");
+    head.className = "report-detail-title";
+    head.textContent = `错误 ${errors.length} 条`;
+    const list = document.createElement("ul");
+    for (const item of errors.slice(0, 20)) {
+      const li = document.createElement("li");
+      li.textContent = item;
+      list.append(li);
+    }
+    detail.append(head, list);
+    auditResult.append(detail);
+  }
+}
+
 function pollJob(jobId) {
   return new Promise((resolve, reject) => {
     const timer = setInterval(async () => {
@@ -261,10 +477,14 @@ function pollJob(jobId) {
   });
 }
 
-async function startJob(action) {
+async function startJob(action, render = renderReport) {
   if (busy) return;
   setBusy(true);
   hideAnkiNotice();
+  if (action === "audit") {
+    auditResult.hidden = true;
+    auditResult.replaceChildren();
+  }
   renderProgress({ phase: "排队中", processed: 0, total: 0 });
 
   try {
@@ -273,7 +493,7 @@ async function startJob(action) {
     });
     const job = await pollJob(job_id);
     ankiProgress.hidden = true;
-    renderReport(job.result);
+    render(job.result);
     showToast("任务完成");
   } catch (error) {
     ankiProgress.hidden = true;
@@ -296,6 +516,9 @@ document
 document
   .getElementById("anki-sync")
   .addEventListener("click", () => startJob("sync"));
+document
+  .getElementById("anki-audit")
+  .addEventListener("click", () => startJob("audit", renderAudit));
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

@@ -482,6 +482,98 @@ button:disabled {
   font-weight: 600;
 }
 
+/* Anki 体检 */
+.audit-result {
+  margin-top: 14px;
+}
+
+.audit-summary {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.audit-section {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.audit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.audit-head h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.audit-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.audit-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.audit-row input[type="checkbox"] {
+  flex: none;
+  margin-top: 3px;
+}
+
+.audit-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.audit-front {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.audit-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+button.danger {
+  background: var(--danger);
+}
+
+button.danger:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+button.danger:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* 卡片列表 */
 .cards-layout {
   display: grid;
