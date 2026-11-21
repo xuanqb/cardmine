@@ -1894,6 +1894,24 @@ a.mention-title:hover {
   font-size: 12px;
 }
 
+.merge-options {
+  margin-bottom: 12px;
+}
+
+.merge-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.merge-option input {
+  flex: none;
+  margin-top: 3px;
+  accent-color: var(--danger);
+}
+
 .merge-warnings {
   display: flex;
   flex-direction: column;

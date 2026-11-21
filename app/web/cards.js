@@ -25,6 +25,7 @@ const aiBatchFill = document.getElementById("ai-batch-fill");
 const mergeButton = document.getElementById("merge-button");
 const mergeModal = document.getElementById("merge-modal");
 const mergeCardList = document.getElementById("merge-card-list");
+const mergeOptions = document.getElementById("merge-options");
 const mergeWarnings = document.getElementById("merge-warnings");
 const mergeCancel = document.getElementById("merge-cancel");
 const mergeConfirm = document.getElementById("merge-confirm");
@@ -33,6 +34,7 @@ const selectedIds = new Set();
 let mergeDetails = [];
 let mergeSurvivorId = null;
 let mergeBusy = false;
+let deleteUnclaimedNotes = false;
 
 let aiBatchRunning = false;
 
@@ -413,6 +415,27 @@ function renderMergeChoices() {
   }
 }
 
+function renderMergeOptions() {
+  mergeOptions.replaceChildren();
+  deleteUnclaimedNotes = false;
+  if (!mergeDetails.some((card) => card.anki_note_id)) return;
+
+  const label = document.createElement("label");
+  label.className = "merge-option";
+
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.addEventListener("change", () => {
+    deleteUnclaimedNotes = checkbox.checked;
+  });
+
+  const text = document.createElement("span");
+  text.textContent = "同时在 Anki 中删除未被接管的 note（不可逆）";
+
+  label.append(checkbox, text);
+  mergeOptions.appendChild(label);
+}
+
 function renderMergeWarnings() {
   const modules = new Set(mergeDetails.map((card) => card.module_path || ""));
   const notes = mergeDetails.filter((card) => card.anki_note_id);
@@ -424,7 +447,7 @@ function renderMergeWarnings() {
   }
   if (notes.length > 0) {
     warnings.push(
-      `共 ${notes.length} 张卡已关联 Anki note，合并后最多接管 1 个；其余 note 不会在 Anki 中自动删除，请手动处理。`,
+      `共 ${notes.length} 张卡已关联 Anki note，合并后最多接管 1 个；其余 note 默认不会在 Anki 中自动删除，请手动处理。`,
     );
   }
 
@@ -461,6 +484,7 @@ async function openMergeModal() {
   );
   mergeSurvivorId = mergeDetails[0].id;
   renderMergeChoices();
+  renderMergeOptions();
   renderMergeWarnings();
   mergeModal.hidden = false;
   updateSelectionUI();
@@ -471,6 +495,8 @@ function closeMergeModal() {
   mergeModal.hidden = true;
   mergeDetails = [];
   mergeSurvivorId = null;
+  deleteUnclaimedNotes = false;
+  mergeOptions.replaceChildren();
   updateSelectionUI();
 }
 
@@ -480,6 +506,15 @@ async function confirmMerge() {
     .map((card) => card.id)
     .filter((id) => id !== mergeSurvivorId);
   if (sourceIds.length === 0) return;
+
+  if (
+    deleteUnclaimedNotes &&
+    !window.confirm(
+      "将在 Anki 中永久删除未被接管的 note，删除后无法恢复。确认继续合并？",
+    )
+  ) {
+    return;
+  }
 
   mergeBusy = true;
   mergeConfirm.disabled = true;
@@ -491,8 +526,17 @@ async function confirmMerge() {
       body: JSON.stringify({
         survivor_id: mergeSurvivorId,
         source_ids: sourceIds,
+        delete_unclaimed_notes: deleteUnclaimedNotes,
       }),
     });
+    const errors = result.note_delete_errors || [];
+    if (errors.length) {
+      window.alert(
+        `合并已完成，但以下 Anki note 删除失败：\n${errors.join(
+          "\n",
+        )}\n请在 Anki 中手动删除。`,
+      );
+    }
     mergeModal.hidden = true;
     selectedIds.clear();
     window.location.href = `/cards/${result.card.id}`;

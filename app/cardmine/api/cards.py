@@ -4,9 +4,11 @@ from contextlib import closing
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .. import review
+from .. import config, review
+from ..anki.client import AnkiClient, AnkiError
 from ..db import connect, utc_now
 from ..importer.textfmt import normalize_front
+from .settings import load_settings
 
 router = APIRouter(prefix="/api", tags=["cards"])
 
@@ -158,6 +160,20 @@ def get_card(card_id: int) -> dict:
 class CardMerge(BaseModel):
     survivor_id: int = Field(ge=1)
     source_ids: list[int] = Field(min_length=1)
+    delete_unclaimed_notes: bool = False
+
+
+def _delete_notes(note_ids: list[int]) -> tuple[list[int], list[str]]:
+    if not note_ids:
+        return [], []
+    settings = load_settings()
+    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
+    try:
+        client.call("deleteNotes", timeout=15, notes=note_ids)
+    except AnkiError as exc:
+        joined = ", ".join(str(item) for item in note_ids)
+        return [], [f"note {joined}: {exc}"]
+    return note_ids, []
 
 
 @router.post("/cards/merge")
@@ -166,6 +182,19 @@ def merge_cards(payload: CardMerge) -> dict:
         result = review.merge_cards(payload.survivor_id, payload.source_ids)
     except review.ReviewError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    result["deleted_notes"] = []
+    result["note_delete_errors"] = []
+    if payload.delete_unclaimed_notes and result["unclaimed_notes"]:
+        note_ids = [
+            item["note_id"]
+            for item in result["unclaimed_notes"]
+            if item["note_id"] != result["anki_note_id"]
+        ]
+        deleted, errors = _delete_notes(note_ids)
+        result["deleted_notes"] = deleted
+        result["note_delete_errors"] = errors
+
     with closing(connect()) as conn:
         result["card"] = _fetch_detail(conn, payload.survivor_id)
     return result
