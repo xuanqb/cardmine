@@ -263,7 +263,7 @@ function openAIDrawer() {
 function closeAIDrawer() {
   aiDrawer.hidden = true;
   aiDrawerBackdrop.hidden = true;
-  document.body.classList.remove("drawer-open");
+  document.body.classList.remove("drawer-open", "drawer-instant");
 }
 
 function renderAI() {
@@ -980,9 +980,6 @@ async function init() {
     frontInput.addEventListener("input", () => {
       document.getElementById("front-view").textContent = frontInput.value;
     });
-    if (window.matchMedia("(min-width: 901px)").matches) {
-      openAIDrawer();
-    }
   } catch (error) {
     showToast(error.message || "卡片加载失败", true);
   }

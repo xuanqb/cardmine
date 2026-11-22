@@ -1422,6 +1422,14 @@ body.drawer-open {
   display: none;
 }
 
+body.drawer-instant .ai-drawer {
+  animation: none;
+}
+
+body.drawer-instant .editor-layout {
+  transition: none;
+}
+
 @media (min-width: 1400px) {
   body.drawer-open .drawer-backdrop {
     display: none;

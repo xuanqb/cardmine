@@ -155,6 +155,14 @@
     <p class="ai-error" id="ai-error" hidden></p>
   </aside>
 
+  <script>
+    if (window.matchMedia("(min-width: 901px)").matches) {
+      document.body.classList.add("drawer-open", "drawer-instant");
+      document.getElementById("ai-drawer").hidden = false;
+      document.getElementById("ai-drawer-backdrop").hidden = false;
+    }
+  </script>
+
   <div class="toast" id="toast" hidden></div>
 
   <script src="/static/vendor/codemirror.min.js"></script>
