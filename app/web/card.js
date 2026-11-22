@@ -980,6 +980,9 @@ async function init() {
     frontInput.addEventListener("input", () => {
       document.getElementById("front-view").textContent = frontInput.value;
     });
+    if (window.matchMedia("(min-width: 901px)").matches) {
+      openAIDrawer();
+    }
   } catch (error) {
     showToast(error.message || "卡片加载失败", true);
   }
