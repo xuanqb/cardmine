@@ -124,6 +124,38 @@
         </fieldset>
 
         <fieldset>
+          <legend>候选人背景</legend>
+          <p class="hint">
+            用于自我介绍、职业规划、项目难点等个人经历类答案。不填时仍会生成通用回答框架。
+          </p>
+          <div class="field-row">
+            <label class="field">
+              <span>当前岗位</span>
+              <input type="text" name="candidate_current_role" autocomplete="off" placeholder="如：Java 后端">
+            </label>
+            <label class="field">
+              <span>目标岗位</span>
+              <input type="text" name="candidate_target_role" autocomplete="off" placeholder="如：后端开发">
+            </label>
+            <label class="field">
+              <span>工作年限</span>
+              <input type="number" name="candidate_years" min="0" max="60" step="1" placeholder="如：3">
+            </label>
+          </div>
+          <details class="field-details">
+            <summary>补充说明（选填）</summary>
+            <label class="field">
+              <span>项目素材、量化结果、离职原因、求职动机</span>
+              <textarea name="candidate_notes" rows="5" maxlength="3000"
+                        placeholder="例如：做过订单和支付系统，负责接口设计与稳定性治理；希望长期做后端，进入自研团队。"></textarea>
+            </label>
+          </details>
+          <p class="hint">
+            修改背景后，已生成的 AI 答案不会自动更新，需要在卡片上重新生成。背景会随每次生成发送给答案模型。
+          </p>
+        </fieldset>
+
+        <fieldset>
           <legend>去重阈值</legend>
           <div class="field-row">
             <label class="field">

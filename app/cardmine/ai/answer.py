@@ -17,6 +17,7 @@ Progress = Callable[[str, int, int], None]
 MAX_VARIANTS = 5
 MAX_CONTEXT_CHARS = 300
 MAX_FRONT_CHARS = 500
+MAX_PROFILE_NOTES = 3000
 
 _batch_lock = threading.Lock()
 
@@ -28,8 +29,14 @@ SYSTEM_PROMPT = """你是一名资深面试辅导老师，负责把面试题整�
 3. 只写你有把握的内容。版本号、数据、源码细节无法确认时标注“（待核实）”，禁止编造。
 4. 长度控制在 400-900 字，重点覆盖面试官最可能追问的点；宁可少写一个要点，也不要注水重复。
 5. 用户会给出该题在真实面经中的问法变体与上下文，用来判断考察深度，但不要照抄原文。
-6. 自我介绍、职业规划、项目难点等个人经历类问题，给出回答框架和示例要点，不要虚构经历。
+6. 自我介绍、职业规划、项目难点等个人经历类问题，优先使用候选人背景中的真实信息；背景未提供或未覆盖的细节标注“（待补充）”，禁止虚构经历。
 7. 只输出 Markdown 正文，不要写“好的”“以下是答案”等前后说明，也不要用 ``` 包裹整段。"""
+
+PROFILE_RULES = """使用规则：
+- 只使用上述背景中的信息，不要补写背景里没有的公司、项目、数字或经历。
+- 背景未覆盖的细节统一写“（待补充）”，方便用户替换。
+- 不主动提及外包、派遣、驻场等雇佣形式，也不要声称自己是正式编制；聚焦岗位职责和工作内容。
+- 表述保持中性积极：强调交付能力、适应不同业务和业务理解，不贬低过往经历。"""
 
 
 def is_running() -> bool:
@@ -48,6 +55,41 @@ def _client(settings: dict) -> AIClient:
         settings.get("ai_answer_api_key") or settings.get("ai_api_key", ""),
         settings.get("ai_answer_model") or settings.get("ai_chat_model", ""),
         reasoning_effort=settings.get("ai_answer_reasoning_effort") or "",
+    )
+
+
+def profile_from_settings(settings: dict) -> dict:
+    return {
+        "current_role": (settings.get("candidate_current_role") or "").strip(),
+        "target_role": (settings.get("candidate_target_role") or "").strip(),
+        "years": int(settings.get("candidate_years") or 0),
+        "notes": (settings.get("candidate_notes") or "").strip()[:MAX_PROFILE_NOTES],
+    }
+
+
+def build_system_prompt(profile: dict | None = None) -> str:
+    if not profile:
+        return SYSTEM_PROMPT
+
+    lines = []
+    if profile.get("current_role"):
+        lines.append(f"- 当前岗位：{profile['current_role']}")
+    if profile.get("target_role"):
+        lines.append(f"- 目标岗位：{profile['target_role']}")
+    if profile.get("years"):
+        lines.append(f"- 工作年限：{profile['years']} 年")
+    notes = (profile.get("notes") or "").strip()
+    if notes:
+        lines.append(f"- 补充说明：\n{notes}")
+    if not lines:
+        return SYSTEM_PROMPT
+
+    return (
+        SYSTEM_PROMPT
+        + "\n\n候选人背景（仅用于个人经历类问题；与当前题目无关时忽略）：\n"
+        + "\n".join(lines)
+        + "\n\n"
+        + PROFILE_RULES
     )
 
 
@@ -80,8 +122,15 @@ def _clean_answer(text: str) -> str:
     return text.strip()
 
 
-def generate_answer(client: AIClient, card: dict, variants: list[dict]) -> str:
-    text = client.chat_text(SYSTEM_PROMPT, build_user_prompt(card, variants))
+def generate_answer(
+    client: AIClient,
+    card: dict,
+    variants: list[dict],
+    profile: dict | None = None,
+) -> str:
+    text = client.chat_text(
+        build_system_prompt(profile), build_user_prompt(card, variants)
+    )
     answer = _clean_answer(text)
     if not answer:
         raise AIError("模型返回空答案")
@@ -89,10 +138,13 @@ def generate_answer(client: AIClient, card: dict, variants: list[dict]) -> str:
 
 
 async def generate_answer_async(
-    client: AIClient, card: dict, variants: list[dict]
+    client: AIClient,
+    card: dict,
+    variants: list[dict],
+    profile: dict | None = None,
 ) -> str:
     text = await client.chat_text_async(
-        SYSTEM_PROMPT, build_user_prompt(card, variants)
+        build_system_prompt(profile), build_user_prompt(card, variants)
     )
     answer = _clean_answer(text)
     if not answer:
@@ -171,13 +223,15 @@ def _reset_running(card_id: int) -> None:
         )
 
 
-def _generate_with_client(client: AIClient, card_id: int, force: bool) -> dict:
+def _generate_with_client(
+    client: AIClient, card_id: int, force: bool, profile: dict | None = None
+) -> dict:
     prepared = _prepare_card(card_id, force)
     if prepared is None:
         return {"card_id": card_id, "skipped": True}
     card, variants = prepared
     try:
-        answer = generate_answer(client, card, variants)
+        answer = generate_answer(client, card, variants, profile)
     except AIError as exc:
         _mark_failed(card_id, str(exc))
         raise
@@ -186,14 +240,14 @@ def _generate_with_client(client: AIClient, card_id: int, force: bool) -> dict:
 
 
 async def _generate_with_client_async(
-    client: AIClient, card_id: int, force: bool
+    client: AIClient, card_id: int, force: bool, profile: dict | None = None
 ) -> dict:
     prepared = _prepare_card(card_id, force)
     if prepared is None:
         return {"card_id": card_id, "skipped": True}
     card, variants = prepared
     try:
-        answer = await generate_answer_async(client, card, variants)
+        answer = await generate_answer_async(client, card, variants, profile)
     except asyncio.CancelledError:
         _reset_running(card_id)
         raise
@@ -208,7 +262,9 @@ def generate_for_card(settings: dict, card_id: int, force: bool = False) -> dict
     client = _client(settings)
     if not client.configured:
         raise AIError("未配置 AI 模型，请先在设置页填写")
-    return _generate_with_client(client, card_id, force)
+    return _generate_with_client(
+        client, card_id, force, profile_from_settings(settings)
+    )
 
 
 async def generate_for_card_async(
@@ -217,7 +273,9 @@ async def generate_for_card_async(
     client = _client(settings)
     if not client.configured:
         raise AIError("未配置 AI 模型，请先在设置页填写")
-    return await _generate_with_client_async(client, card_id, force)
+    return await _generate_with_client_async(
+        client, card_id, force, profile_from_settings(settings)
+    )
 
 
 def run_batch(
@@ -232,6 +290,7 @@ def run_batch(
         client = _client(settings)
         if not client.configured:
             raise AIError("未配置 AI 模型，请先在设置页填写")
+        profile = profile_from_settings(settings)
 
         report = {
             "total": len(card_ids),
@@ -243,7 +302,7 @@ def run_batch(
         for index, card_id in enumerate(card_ids, start=1):
             _notify(progress, "生成 AI 答案", index - 1, len(card_ids))
             try:
-                result = _generate_with_client(client, card_id, force)
+                result = _generate_with_client(client, card_id, force, profile)
             except (AIError, LookupError, ValueError) as exc:
                 report["failed"] += 1
                 report["errors"].append(f"卡片 {card_id}: {exc}")

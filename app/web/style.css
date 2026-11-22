@@ -331,7 +331,8 @@ legend {
   color: var(--text-muted);
 }
 
-.field input {
+.field input,
+.field textarea {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -342,10 +343,32 @@ legend {
   font-size: 13px;
 }
 
-.field input:focus {
+.field textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.field input:focus,
+.field textarea:focus {
   outline: none;
   border-color: var(--brand);
   box-shadow: 0 0 0 3px rgba(26, 127, 55, 0.12);
+}
+
+.field-details {
+  margin: 8px 0;
+}
+
+.field-details summary {
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.field-details[open] summary {
+  margin-bottom: 4px;
 }
 
 .field-row {

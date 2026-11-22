@@ -24,6 +24,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ai_embedding_api_key": "",
     "ai_embedding_model": "",
     "ai_embedding_dim": 1024,
+    "candidate_current_role": "",
+    "candidate_target_role": "",
+    "candidate_years": 0,
+    "candidate_notes": "",
     "dup_high_threshold": 0.92,
     "dup_low_threshold": 0.82,
     "anki_url": "http://anki-connect-server:8765/api",
@@ -47,6 +51,10 @@ class SettingsIn(BaseModel):
     ai_embedding_api_key: str | None = None
     ai_embedding_model: str | None = None
     ai_embedding_dim: int | None = Field(None, ge=1)
+    candidate_current_role: str | None = Field(None, max_length=100)
+    candidate_target_role: str | None = Field(None, max_length=100)
+    candidate_years: int | None = Field(None, ge=0, le=60)
+    candidate_notes: str | None = Field(None, max_length=3000)
     dup_high_threshold: float | None = Field(None, ge=0, le=1)
     dup_low_threshold: float | None = Field(None, ge=0, le=1)
     anki_url: str | None = None

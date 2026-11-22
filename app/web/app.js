@@ -156,6 +156,8 @@ async function loadSettings() {
     if (!input) continue;
     if (input.type === "checkbox") {
       input.checked = Boolean(value);
+    } else if (key === "candidate_years" && !value) {
+      input.value = "";
     } else {
       input.value = value === null || value === undefined ? "" : value;
     }
