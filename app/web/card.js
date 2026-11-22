@@ -958,7 +958,7 @@ async function init() {
     aiInput.addEventListener("keydown", (event) => {
       if (
         event.key === "Enter" &&
-        event.altKey &&
+        event.metaKey &&
         !event.isComposing &&
         !aiSend.disabled
       ) {
