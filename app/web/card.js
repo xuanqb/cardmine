@@ -17,8 +17,6 @@ const aiDrawer = document.getElementById("ai-drawer");
 const aiDrawerBackdrop = document.getElementById("ai-drawer-backdrop");
 const aiDrawerClose = document.getElementById("ai-drawer-close");
 const aiOpen = document.getElementById("ai-open");
-const aiCurrent = document.getElementById("ai-current");
-const aiBody = document.getElementById("ai-body");
 const aiError = document.getElementById("ai-error");
 const aiGenerate = document.getElementById("ai-generate");
 const aiThreadSelect = document.getElementById("ai-thread-select");
@@ -30,9 +28,6 @@ const aiComposer = document.getElementById("ai-composer");
 const aiInput = document.getElementById("ai-input");
 const aiSend = document.getElementById("ai-send");
 const aiStop = document.getElementById("ai-stop");
-const aiAdopt = document.getElementById("ai-adopt");
-const aiAppend = document.getElementById("ai-append");
-const aiClear = document.getElementById("ai-clear");
 
 let card = null;
 let editor = null;
@@ -273,16 +268,6 @@ function closeAIDrawer() {
 
 function renderAI() {
   const hasAnswer = Boolean((card.ai_back_md || "").trim());
-  aiCurrent.hidden = !hasAnswer;
-  if (hasAnswer) {
-    renderMarkdown(card.ai_back_md, aiBody);
-  } else {
-    aiBody.replaceChildren();
-  }
-
-  aiAdopt.hidden = !hasAnswer;
-  aiAppend.hidden = !hasAnswer;
-  aiClear.hidden = !hasAnswer;
 
   const stale = hasAnswer && Boolean(card.ai_stale);
   aiMeta.classList.toggle("stale", stale);
@@ -375,6 +360,27 @@ function messageElement(message) {
       setCurrentAnswer(message.id, button)
     );
     actions.append(button);
+    if (isCurrent) {
+      const adopt = document.createElement("button");
+      adopt.type = "button";
+      adopt.className = "ghost link-button";
+      adopt.textContent = "覆盖背面";
+      adopt.addEventListener("click", adoptAI);
+
+      const append = document.createElement("button");
+      append.type = "button";
+      append.className = "ghost link-button";
+      append.textContent = "追加到背面";
+      append.addEventListener("click", appendAI);
+
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "ghost link-button";
+      clear.textContent = "清空答案";
+      clear.addEventListener("click", () => clearAI(clear));
+
+      actions.append(adopt, append, clear);
+    }
     article.append(actions);
   }
   return article;
@@ -862,18 +868,18 @@ function stopAI() {
   if (aiStreamController) aiStreamController.abort();
 }
 
-async function clearAI() {
-  aiClear.disabled = true;
+async function clearAI(button) {
+  if (button) button.disabled = true;
   try {
     card = await window.cm.fetchJSON(`/api/cards/${cardId}/ai-answer`, {
       method: "DELETE",
     });
     renderAI();
+    if (activeThreadId) await openThread(activeThreadId);
     showToast("已清空 AI 答案");
   } catch (error) {
     showToast(error.message || "清空失败", true);
-  } finally {
-    aiClear.disabled = false;
+    if (button) button.disabled = false;
   }
 }
 
@@ -957,9 +963,6 @@ async function init() {
           aiMessages.clientHeight <
         40;
     });
-    aiAdopt.addEventListener("click", adoptAI);
-    aiAppend.addEventListener("click", appendAI);
-    aiClear.addEventListener("click", clearAI);
     frontInput.addEventListener("input", () => {
       document.getElementById("front-view").textContent = frontInput.value;
     });

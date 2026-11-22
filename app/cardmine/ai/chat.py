@@ -197,8 +197,15 @@ def build_messages(settings: dict, thread_id: int) -> list[dict]:
         answer.build_system_prompt(answer.profile_from_settings(settings))
         + "\n\n以下是当前卡片的信息，回答时以它为准：\n"
         + answer.build_user_prompt(dict(card), variants)
-        + "\n\n现在用户会围绕这道题继续追问或要求改写，请直接回答，不要重复题目。"
     )
+    back = (card["back_md"] or "").strip()
+    if back:
+        system += (
+            "\n\n当前卡片已有的背面内容（供参考，可在其基础上补充或改写，"
+            "不要忽略其中有效信息）：\n"
+            + back
+        )
+    system += "\n\n现在用户会围绕这道题继续追问或要求改写，请直接回答，不要重复题目。"
     return [{"role": "system", "content": system}, *history]
 
 

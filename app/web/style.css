@@ -1473,18 +1473,6 @@ body.drawer-open {
   color: #b26a00;
 }
 
-.ai-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.ai-actions button {
-  padding: 6px 12px;
-  font-size: 12px;
-}
-
 .ai-thread-select {
   flex: 1 1 180px;
   min-width: 0;
@@ -1495,33 +1483,6 @@ body.drawer-open {
   color: var(--text);
   font: inherit;
   font-size: 12px;
-}
-
-.ai-current {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-muted);
-}
-
-.ai-current-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.ai-current .ai-body {
-  margin-top: 10px;
-  max-height: 26vh;
-  overflow: auto;
-  padding: 0;
-  border: none;
-  background: transparent;
 }
 
 .ai-stale-banner {
@@ -1595,7 +1556,9 @@ body.drawer-open {
 
 .ai-message-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  gap: 10px;
   margin-top: 8px;
 }
 
