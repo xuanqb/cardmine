@@ -93,9 +93,19 @@ function renderMarkdown(source, target) {
   target.innerHTML = markdown.render(source);
   target.querySelectorAll("img").forEach((image) => {
     const src = image.getAttribute("src") || "";
-    if (src && !/^(?:[a-z]+:|\/|#)/i.test(src)) {
-      image.src = `/media/${encodeURIComponent(src)}`;
-    }
+    if (!src || /^(?:[a-z]+:|\/|#)/i.test(src)) return;
+    const name = src.split(/[?#]/, 1)[0];
+    image.src = `/media/${encodeURIComponent(name)}`;
+    image.addEventListener(
+      "error",
+      () => {
+        const placeholder = document.createElement("span");
+        placeholder.className = "media-missing";
+        placeholder.textContent = `图片缺失：${name}`;
+        image.replaceWith(placeholder);
+      },
+      { once: true },
+    );
   });
 }
 

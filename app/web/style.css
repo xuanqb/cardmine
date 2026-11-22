@@ -1382,6 +1382,15 @@ button.ghost:disabled {
   border-radius: 6px;
 }
 
+.markdown-body .media-missing {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px dashed var(--danger);
+  border-radius: 6px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .markdown-body a {
   color: var(--brand);
 }
