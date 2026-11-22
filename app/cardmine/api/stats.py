@@ -1,4 +1,5 @@
 import time
+import re
 from contextlib import closing
 from datetime import datetime, timezone
 
@@ -130,19 +131,65 @@ def _fetch_status(conn) -> dict:
     }
 
 
+def _front_preview(text: str | None) -> str:
+    plain = re.sub(r"<[^>]+>", " ", text or "")
+    return re.sub(r"\s+", " ", plain).strip()[:120]
+
+
 def _media_status(conn) -> dict:
+    rows = conn.execute(
+        "SELECT k.id, k.front_md, k.back_md, m.path AS module_path "
+        "FROM knowledge_point k LEFT JOIN module m ON m.id = k.module_id "
+        "ORDER BY k.id"
+    ).fetchall()
+
     refs: set[str] = set()
-    for row in conn.execute("SELECT front_md, back_md FROM knowledge_point"):
-        refs |= local_media_refs(row["front_md"], row["back_md"])
+    cards: list[tuple] = []
+    for row in rows:
+        front_refs = local_media_refs(row["front_md"])
+        back_refs = local_media_refs(row["back_md"])
+        names = front_refs | back_refs
+        if not names:
+            continue
+        refs |= names
+        cards.append((row, front_refs, back_refs, names))
+
     missing = sorted(
         name for name in refs if not (config.MEDIA_DIR / name).is_file()
     )
+    missing_set = set(missing)
+    details: dict[str, dict] = {
+        name: {"name": name, "card_count": 0, "cards": []} for name in missing
+    }
+    for row, front_refs, back_refs, names in cards:
+        for name in names & missing_set:
+            item = details[name]
+            item["card_count"] += 1
+            if len(item["cards"]) >= 5:
+                continue
+            item["cards"].append(
+                {
+                    "id": row["id"],
+                    "front": _front_preview(row["front_md"]),
+                    "module": row["module_path"] or "",
+                    "where": [
+                        label
+                        for label, values in (
+                            ("front", front_refs),
+                            ("back", back_refs),
+                        )
+                        if name in values
+                    ],
+                }
+            )
+
     total = conn.execute("SELECT COUNT(*) AS value FROM media").fetchone()["value"]
     return {
         "referenced": len(refs),
         "stored": total,
         "missing_count": len(missing),
         "missing": missing,
+        "missing_items": [details[name] for name in missing],
         "sample": missing[:20],
     }
 
@@ -202,7 +249,7 @@ def _alerts(fetch: dict, cards: dict, review: dict, sync: dict, ai: dict, media:
             {
                 "level": "warning",
                 "text": f"{media['missing_count']} 个被引用的媒体文件缺失",
-                "items": media.get("missing") or [],
+                "items": media.get("missing_items") or [],
             }
         )
     if not cards["draft"] and not cards["ready"] and not cards["archived"]:

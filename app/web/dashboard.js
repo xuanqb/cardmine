@@ -71,10 +71,67 @@ function renderAlerts(alerts) {
       list.className = "alert-detail-list";
       for (const item of alert.items) {
         const entry = document.createElement("li");
-        entry.textContent = item;
+        if (typeof item === "string") {
+          entry.textContent = item;
+          list.appendChild(entry);
+          continue;
+        }
+        const name = document.createElement("code");
+        name.textContent = item.name;
+        entry.appendChild(name);
+        if (item.card_count) {
+          const meta = document.createElement("div");
+          meta.className = "media-ref-meta";
+          meta.textContent = `被 ${item.card_count} 张卡片引用`;
+          entry.appendChild(meta);
+        }
+        if (item.cards && item.cards.length) {
+          const cards = document.createElement("ul");
+          cards.className = "media-card-list";
+          for (const card of item.cards) {
+            const row = document.createElement("li");
+            const link = document.createElement("a");
+            link.href = `/cards/${card.id}`;
+            link.target = "_blank";
+            link.rel = "noopener";
+            link.textContent = card.front
+              ? `#${card.id} ${card.front}`
+              : `#${card.id}`;
+            row.appendChild(link);
+            const meta = document.createElement("span");
+            meta.className = "media-card-meta";
+            const parts = [];
+            if (card.module) parts.push(card.module.replaceAll("/", " / "));
+            if (card.where && card.where.length) {
+              parts.push(
+                card.where
+                  .map((where) => (where === "front" ? "正面" : "背面"))
+                  .join("、"),
+              );
+            }
+            if (parts.length) {
+              meta.textContent = ` · ${parts.join(" · ")}`;
+              row.appendChild(meta);
+            }
+            cards.appendChild(row);
+          }
+          entry.appendChild(cards);
+          if (item.card_count > item.cards.length) {
+            const more = document.createElement("div");
+            more.className = "media-ref-meta";
+            more.textContent = `另有 ${
+              item.card_count - item.cards.length
+            } 张卡片引用`;
+            entry.appendChild(more);
+          }
+        }
         list.appendChild(entry);
       }
-      details.append(summary, list);
+      const hint = document.createElement("p");
+      hint.className = "alert-detail-hint";
+      hint.textContent =
+        "点击卡片可查看引用位置；补齐媒体文件或重新导入包含该媒体的 apkg 后刷新。";
+      details.append(summary, hint, list);
       li.append(details);
     } else {
       li.textContent = alert.text;
