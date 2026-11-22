@@ -955,6 +955,17 @@ async function init() {
       event.preventDefault();
       sendMessageText(aiInput.value);
     });
+    aiInput.addEventListener("keydown", (event) => {
+      if (
+        event.key === "Enter" &&
+        event.altKey &&
+        !event.isComposing &&
+        !aiSend.disabled
+      ) {
+        event.preventDefault();
+        aiComposer.requestSubmit();
+      }
+    });
     aiStop.addEventListener("click", stopAI);
     aiMessages.addEventListener("scroll", () => {
       aiMessagesPinned =
