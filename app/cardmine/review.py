@@ -1,5 +1,6 @@
 """审核队列：合并 / 保持独立 / 忽略，操作留痕与撤销，全库语义去重扫描。"""
 
+import hashlib
 import json
 import math
 import threading
@@ -37,6 +38,73 @@ def _notify(progress: Progress | None, phase: str, done: int, total: int) -> Non
 
 def _snapshot(conn, table: str, where: str, params: tuple) -> list[dict]:
     return [dict(row) for row in conn.execute(f"SELECT * FROM {table} {where}", params)]
+
+
+def _content_hash(front_norm: str, back_md: str | None) -> str:
+    return hashlib.sha1(
+        f"{front_norm}\n{back_md or ''}".encode("utf-8")
+    ).hexdigest()
+
+
+def _row_hash(row) -> str:
+    return _content_hash(row["front_norm"], row["back_md"])
+
+
+def _pair_key(left_id: int, right_id: int) -> tuple[int, int]:
+    return (left_id, right_id) if left_id < right_id else (right_id, left_id)
+
+
+def _record_exclusion(conn, left, right, action_id: int, now: str) -> None:
+    left_id, right_id = _pair_key(int(left["id"]), int(right["id"]))
+    first, second = (
+        (left, right) if int(left["id"]) == left_id else (right, left)
+    )
+    conn.execute(
+        "INSERT INTO dup_exclusion"
+        "(left_kp_id, right_kp_id, left_hash, right_hash, action_id, created_at) "
+        "VALUES(?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(left_kp_id, right_kp_id) DO UPDATE SET "
+        "left_hash = excluded.left_hash, right_hash = excluded.right_hash, "
+        "action_id = excluded.action_id, created_at = excluded.created_at",
+        (
+            left_id,
+            right_id,
+            _row_hash(first),
+            _row_hash(second),
+            action_id,
+            now,
+        ),
+    )
+
+
+def _active_exclusion_pairs(conn) -> set[tuple[int, int]]:
+    rows = conn.execute(
+        "SELECT e.left_kp_id, e.right_kp_id, e.left_hash, e.right_hash, "
+        "lk.front_norm AS left_norm, lk.back_md AS left_back, "
+        "rk.front_norm AS right_norm, rk.back_md AS right_back "
+        "FROM dup_exclusion e "
+        "JOIN knowledge_point lk ON lk.id = e.left_kp_id "
+        "JOIN knowledge_point rk ON rk.id = e.right_kp_id"
+    ).fetchall()
+    active: set[tuple[int, int]] = set()
+    stale: list[tuple[int, int]] = []
+    for row in rows:
+        unchanged = (
+            _content_hash(row["left_norm"], row["left_back"]) == row["left_hash"]
+            and _content_hash(row["right_norm"], row["right_back"])
+            == row["right_hash"]
+        )
+        if unchanged:
+            active.add((row["left_kp_id"], row["right_kp_id"]))
+        else:
+            stale.append((row["left_kp_id"], row["right_kp_id"]))
+    if stale:
+        conn.executemany(
+            "DELETE FROM dup_exclusion WHERE left_kp_id = ? AND right_kp_id = ?",
+            stale,
+        )
+        conn.commit()
+    return active
 
 
 def list_candidates(
@@ -254,6 +322,7 @@ def _resolve(conn, candidate, action: str, keep_side: str = "left") -> dict:
             "UPDATE dup_candidate SET status = 'kept', resolved_at = ? WHERE id = ?",
             (now, candidate["id"]),
         )
+        _record_exclusion(conn, left, right, action_id, now)
 
     else:  # ignore
         if mention_id is not None:
@@ -532,6 +601,10 @@ def undo_action(action_id: int) -> dict:
                     f"({', '.join('?' for _ in kp_ids)})",
                     kp_ids,
                 )
+        elif row["action"] == "keep":
+            conn.execute(
+                "DELETE FROM dup_exclusion WHERE action_id = ?", (action_id,)
+            )
 
         for snapshot in payload.get("kps") or []:
             _restore(conn, "knowledge_point", snapshot, "id")
@@ -616,6 +689,7 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
         ]
         fronts = {row["id"]: row["front_md"] for row in rows}
         alias_rows = aliases.load_all(conn, merger.dim)
+        excluded = _active_exclusion_pairs(conn)
 
         norms = {kp_id: math.sqrt(sum(value * value for value in vector)) for kp_id, vector in items}
         scored: list[tuple[float, int, int]] = []
@@ -628,6 +702,8 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
             for right_id, right_vector in items[index + 1 :]:
                 right_norm = norms[right_id]
                 if right_norm == 0:
+                    continue
+                if (left_id, right_id) in excluded:
                     continue
                 dot = sum(a * b for a, b in zip(left_vector, right_vector))
                 score = dot / (left_norm * right_norm)
@@ -653,6 +729,8 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
                 break
             for active_id, score in alias_hits:
                 if active_id == owner or active_id not in fronts or score < low:
+                    continue
+                if _pair_key(owner, active_id) in excluded:
                     continue
                 key = (owner, active_id)
                 current = alias_best.get(key)
@@ -683,11 +761,13 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
             item
             for item in scored
             if frozenset((item[1], item[2])) not in existing
+            and _pair_key(item[1], item[2]) not in excluded
         ][:SCAN_VERIFY_LIMIT]
         alias_shortlist = [
             item
             for item in alias_scored
             if frozenset((item[1], item[2])) not in existing
+            and _pair_key(item[1], item[2]) not in excluded
         ][:SCAN_VERIFY_LIMIT]
 
         for index, (score, left_id, right_id) in enumerate(shortlist, start=1):

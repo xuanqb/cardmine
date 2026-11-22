@@ -42,7 +42,7 @@
         </select>
         <button type="button" class="ghost" id="select-all">全选本页</button>
         <button type="button" id="batch-merge" disabled>合并所选</button>
-        <button type="button" class="ghost" id="batch-keep" disabled>保持独立</button>
+        <button type="button" class="ghost" id="batch-keep" disabled title="标记为不同问题；内容不变时后续扫描不再提示">保持独立</button>
         <button type="button" class="ghost" id="batch-ignore" disabled>忽略所选</button>
       </div>
 
@@ -79,7 +79,7 @@
 
       <section class="panel">
         <h2>操作记录</h2>
-        <p class="hint">合并、忽略与保持独立的操作均可撤销，撤销会恢复卡片与问法变体。</p>
+        <p class="hint">合并、忽略与保持独立的操作均可撤销；保持独立后，两张卡片内容不变时后续扫描不再提示，内容变化会重新评估。</p>
         <ul class="action-list" id="action-list"></ul>
         <div class="pager action-pager">
           <button class="ghost" type="button" id="action-prev" disabled>上一页</button>
