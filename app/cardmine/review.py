@@ -308,7 +308,9 @@ def _resolve(conn, candidate, action: str, keep_side: str = "left") -> dict:
             (merged_back, status, note_id, now, survivor_id),
         )
         conn.execute(
-            "UPDATE anki_sync SET pushed_hash = NULL WHERE kp_id = ?", (survivor_id,)
+            "UPDATE anki_sync SET pushed_hash = NULL, pushed_front_hash = NULL, "
+            "pushed_back_hash = NULL WHERE kp_id = ?",
+            (survivor_id,),
         )
         aliases.record_merge(conn, action_id, survivor_id, [discarded])
         conn.execute("DELETE FROM knowledge_point WHERE id = ?", (discarded_id,))
@@ -519,7 +521,9 @@ def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
             tuple(sources),
         )
         conn.execute(
-            "UPDATE anki_sync SET pushed_hash = NULL WHERE kp_id = ?", (survivor_id,)
+            "UPDATE anki_sync SET pushed_hash = NULL, pushed_front_hash = NULL, "
+            "pushed_back_hash = NULL WHERE kp_id = ?",
+            (survivor_id,),
         )
 
     return {

@@ -32,6 +32,7 @@
     <aside class="panel info-panel">
       <div class="info-head">
         <h2>卡片信息</h2>
+        <span class="badge conflict" id="conflict-badge" hidden>同步冲突</span>
         <span class="badge" id="status-badge">—</span>
       </div>
 
@@ -70,6 +71,15 @@
         <h3>已合并的来源问题</h3>
         <p class="muted alias-hint">这些正面来自被合并的卡片，仍会参与后续去重。</p>
         <ul class="alias-list" id="alias-list"></ul>
+      </section>
+
+      <section class="info-section" id="conflict-section" hidden>
+        <h3>同步冲突</h3>
+        <p class="muted alias-hint">
+          以下字段在系统与 Anki 都被修改，未自动覆盖。请前往
+          <a href="/settings">设置页</a> 选择保留哪一侧。
+        </p>
+        <ul class="conflict-card-list" id="conflict-card-list"></ul>
       </section>
 
       <section class="info-section">

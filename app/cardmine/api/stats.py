@@ -240,6 +240,13 @@ def _alerts(fetch: dict, cards: dict, review: dict, sync: dict, ai: dict, media:
         alerts.append(
             {"level": "warning", "text": f"{sync['failed']} 张卡片上次推送失败"}
         )
+    if sync.get("conflicts"):
+        alerts.append(
+            {
+                "level": "warning",
+                "text": f"有 {sync['conflicts']} 条 Anki 同步冲突待处理",
+            }
+        )
     if ai["failed_posts"]:
         alerts.append(
             {"level": "warning", "text": f"{ai['failed_posts']} 篇面经 AI 切题失败"}
@@ -283,6 +290,9 @@ def dashboard() -> dict:
         sync = {
             "failed": conn.execute(
                 "SELECT COUNT(*) AS value FROM anki_sync WHERE last_error IS NOT NULL"
+            ).fetchone()["value"],
+            "conflicts": conn.execute(
+                "SELECT COUNT(*) AS value FROM anki_conflict WHERE status = 'pending'"
             ).fetchone()["value"],
             "failed_items": [
                 dict(row)

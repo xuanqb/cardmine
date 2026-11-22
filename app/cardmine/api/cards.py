@@ -149,6 +149,18 @@ def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
     detail["variants"] = [dict(item) for item in variants]
     detail["sources"] = [dict(item) for item in sources]
     detail["aliases"] = aliases.list_for_survivor(conn, card_id)
+    detail["conflicts"] = [
+        dict(item)
+        for item in conn.execute(
+            """
+            SELECT id, field, note, system_value, anki_value, created_at
+            FROM anki_conflict
+            WHERE kp_id = ? AND status = 'pending'
+            ORDER BY id
+            """,
+            (card_id,),
+        )
+    ]
     return detail
 
 

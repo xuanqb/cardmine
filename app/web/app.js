@@ -11,6 +11,7 @@ const auditResult = document.getElementById("audit-result");
 const jobButtons = [
   document.getElementById("anki-takeover"),
   document.getElementById("anki-push"),
+  document.getElementById("anki-pull"),
   document.getElementById("anki-sync"),
   document.getElementById("anki-audit"),
 ];
@@ -25,10 +26,20 @@ const RESULT_LABELS = {
   changed: "内容变化",
   added: "新增卡片",
   updated: "更新卡片",
+  pulled: "回写卡片",
+  conflicts: "新冲突",
+  skipped_conflicts: "跳过冲突卡",
+  linked: "已关联卡片",
+  checked: "检查卡片",
+  skipped: "跳过",
   failed: "失败",
   media_uploaded: "上传媒体",
   sync: "同步结果",
 };
+
+const conflictList = document.getElementById("conflict-list");
+const resolvedBox = document.getElementById("conflict-resolved");
+const resolvedList = document.getElementById("conflict-resolved-list");
 
 let toastTimer = null;
 let busy = false;
@@ -147,6 +158,8 @@ function renderAnkiStatus(data) {
     `${cards.pending_push ?? 0} 张`;
   document.getElementById("anki-matched").textContent =
     `${cards.matched ?? 0} 张`;
+  document.getElementById("anki-conflicts").textContent =
+    `${data.conflicts ?? 0} 条`;
   document.getElementById("anki-last-push").textContent = formatTime(
     data.last_push_at,
   );
@@ -490,6 +503,169 @@ function renderAudit(result) {
   }
 }
 
+function conflictSide(title, text) {
+  const side = document.createElement("div");
+  side.className = "conflict-side";
+  const label = document.createElement("span");
+  label.className = "conflict-side-label";
+  label.textContent = title;
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  const preview = (text || "").replace(/\s+/g, " ").trim().slice(0, 120);
+  summary.textContent = preview || "（空）";
+  const body = document.createElement("pre");
+  body.textContent = text || "（空）";
+  details.append(summary, body);
+  side.append(label, details);
+  return side;
+}
+
+async function resolveConflictItem(id, choice) {
+  const hint =
+    choice === "system"
+      ? "将用系统当前内容覆盖 Anki 该字段，Anki 原文会保留在冲突记录中。确认继续？"
+      : "将采用 Anki 内容回写系统，可在解决后撤销。确认继续？";
+  if (!window.confirm(hint)) return;
+  try {
+    await fetchJSON(`/api/anki/conflicts/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ choice }),
+    });
+    showToast(choice === "system" ? "已用系统内容覆盖 Anki" : "已采用 Anki 内容");
+    loadConflicts();
+    loadAnkiStatus();
+  } catch (error) {
+    showToast(error.message || "处理失败", true);
+  }
+}
+
+async function undoConflictItem(id) {
+  if (!window.confirm("撤销后会恢复系统原背面，并重新打开该冲突。确认继续？")) {
+    return;
+  }
+  try {
+    await fetchJSON(`/api/anki/conflicts/${id}/undo`, { method: "POST" });
+    showToast("已撤销「用 Anki」");
+    loadConflicts();
+    loadAnkiStatus();
+  } catch (error) {
+    showToast(error.message || "撤销失败", true);
+  }
+}
+
+function renderConflictItem(item, resolved) {
+  const row = document.createElement("div");
+  row.className = "conflict-row";
+
+  const head = document.createElement("div");
+  head.className = "conflict-head";
+  const title = document.createElement("a");
+  title.href = `/cards/${item.kp_id}`;
+  title.className = "conflict-title";
+  title.textContent =
+    `#${item.kp_id} · ${item.field_label}` +
+    ` · ${item.front_preview || "（空正面）"}`;
+  const meta = document.createElement("span");
+  meta.className = "conflict-meta";
+  const parts = [];
+  if (item.module_path) parts.push(item.module_path.replaceAll("/", " / "));
+  if (resolved && item.resolution) {
+    parts.push(item.resolution === "anki" ? "已采用 Anki" : "已用系统");
+    parts.push(formatTime(item.resolved_at));
+  } else {
+    parts.push(formatTime(item.created_at));
+  }
+  meta.textContent = parts.join(" · ");
+  head.append(title, meta);
+  row.append(head);
+
+  if (item.note) {
+    const note = document.createElement("p");
+    note.className = "conflict-note";
+    note.textContent = item.note;
+    row.append(note);
+  }
+
+  const diff = document.createElement("div");
+  diff.className = "conflict-diff";
+  diff.append(
+    conflictSide("系统", item.system_value),
+    conflictSide("Anki", item.anki_value),
+  );
+  row.append(diff);
+
+  const actions = document.createElement("div");
+  actions.className = "conflict-actions";
+  if (!resolved) {
+    const useSystem = document.createElement("button");
+    useSystem.type = "button";
+    useSystem.textContent = "用系统";
+    useSystem.addEventListener("click", () =>
+      resolveConflictItem(item.id, "system"),
+    );
+    actions.append(useSystem);
+
+    if (item.field === "back") {
+      const useAnki = document.createElement("button");
+      useAnki.type = "button";
+      useAnki.className = "ghost";
+      useAnki.textContent = "用 Anki";
+      useAnki.addEventListener("click", () =>
+        resolveConflictItem(item.id, "anki"),
+      );
+      actions.append(useAnki);
+    }
+  } else if (item.resolution === "anki") {
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.className = "ghost";
+    undo.textContent = "撤销";
+    undo.addEventListener("click", () => undoConflictItem(item.id));
+    actions.append(undo);
+  }
+  if (actions.childElementCount) row.append(actions);
+  return row;
+}
+
+function emptyHint(text) {
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = text;
+  return hint;
+}
+
+async function loadConflicts() {
+  try {
+    const pending = await fetchJSON(
+      "/api/anki/conflicts?status=pending&limit=200",
+    );
+    conflictList.replaceChildren();
+    if (!pending.items.length) {
+      conflictList.append(emptyHint("没有待处理冲突。"));
+    } else {
+      for (const item of pending.items) {
+        conflictList.append(renderConflictItem(item, false));
+      }
+    }
+  } catch (error) {
+    conflictList.replaceChildren(emptyHint(error.message || "读取冲突失败"));
+  }
+
+  try {
+    const resolved = await fetchJSON(
+      "/api/anki/conflicts?status=resolved&limit=10",
+    );
+    resolvedList.replaceChildren();
+    resolvedBox.hidden = resolved.items.length === 0;
+    for (const item of resolved.items) {
+      resolvedList.append(renderConflictItem(item, true));
+    }
+  } catch (error) {
+    resolvedBox.hidden = true;
+  }
+}
+
 function pollJob(jobId) {
   return new Promise((resolve, reject) => {
     const timer = setInterval(async () => {
@@ -538,6 +714,7 @@ async function startJob(action, render = renderReport) {
   } finally {
     setBusy(false);
     loadAnkiStatus();
+    loadConflicts();
   }
 }
 
@@ -548,6 +725,9 @@ document
 document
   .getElementById("anki-push")
   .addEventListener("click", () => startJob("push"));
+document
+  .getElementById("anki-pull")
+  .addEventListener("click", () => startJob("pull"));
 document
   .getElementById("anki-sync")
   .addEventListener("click", () => startJob("sync"));
@@ -589,7 +769,11 @@ form.addEventListener("submit", async (event) => {
 loadHealth();
 loadSettings().catch(() => showToast("读取设置失败", true));
 loadAnkiStatus();
+loadConflicts();
 setInterval(loadHealth, 30000);
 setInterval(() => {
-  if (!busy) loadAnkiStatus();
+  if (!busy) {
+    loadAnkiStatus();
+    loadConflicts();
+  }
 }, 30000);

@@ -26,6 +26,10 @@ let markdown = null;
 let toastTimer = null;
 let aiBusy = false;
 let aiController = null;
+let suppressPreviewUntil = 0;
+let suppressEditorUntil = 0;
+
+const editorSplit = document.querySelector(".editor-split");
 
 function showToast(message, isError = false) {
   toast.textContent = message;
@@ -67,6 +71,23 @@ function renderMarkdown(source, target) {
         return `<pre class="hljs"><code>${escaped}</code></pre>`;
       },
     });
+    markdown.core.ruler.push("source_line", (state) => {
+      for (const token of state.tokens) {
+        if (token.map && token.map.length) {
+          token.attrSet("data-source-line", String(token.map[0]));
+        }
+      }
+    });
+    const fence = markdown.renderer.rules.fence;
+    markdown.renderer.rules.fence = (tokens, idx, options, env, self) => {
+      const html = fence(tokens, idx, options, env, self);
+      const token = tokens[idx];
+      if (!token.map || !token.map.length) return html;
+      return html.replace(
+        /^(\s*<pre)/,
+        `$1 data-source-line="${token.map[0]}"`,
+      );
+    };
   }
 
   target.innerHTML = markdown.render(source);
@@ -89,6 +110,73 @@ function setBack(value) {
     backTextarea.value = value;
   }
   renderPreview();
+}
+
+function isSideBySide() {
+  if (!editorSplit) return false;
+  const columns = getComputedStyle(editorSplit).gridTemplateColumns || "";
+  return columns.trim().split(/\s+/).filter(Boolean).length > 1;
+}
+
+function previewAnchors() {
+  return preview.querySelectorAll("[data-source-line]");
+}
+
+function scrollPreviewToElement(element, keepIfVisible) {
+  const box = preview.getBoundingClientRect();
+  const rect = element.getBoundingClientRect();
+  const visible = rect.bottom > box.top + 2 && rect.top < box.bottom - 2;
+  if (keepIfVisible && visible) return;
+  const top = preview.scrollTop + rect.top - box.top;
+  if (Math.abs(top - preview.scrollTop) < 2) return;
+  suppressPreviewUntil = performance.now() + 120;
+  preview.scrollTop = top;
+}
+
+function syncPreviewToLine(line, keepIfVisible) {
+  const anchors = previewAnchors();
+  let target = anchors[0] || null;
+  for (const element of anchors) {
+    const value = Number(element.getAttribute("data-source-line"));
+    if (!Number.isFinite(value)) continue;
+    if (value > line) break;
+    target = element;
+  }
+  if (target) scrollPreviewToElement(target, keepIfVisible);
+}
+
+function syncEditorToPreview() {
+  if (!editor) return;
+  const boxTop = preview.getBoundingClientRect().top;
+  let target = null;
+  for (const element of previewAnchors()) {
+    if (element.getBoundingClientRect().bottom > boxTop + 2) {
+      target = element;
+      break;
+    }
+  }
+  if (!target) return;
+  const line = Number(target.getAttribute("data-source-line"));
+  if (!Number.isFinite(line)) return;
+  suppressEditorUntil = performance.now() + 120;
+  editor.scrollTo(null, editor.heightAtLine(line, "local"));
+}
+
+function bindScrollSync() {
+  if (!editor) return;
+  editor.on("scroll", () => {
+    if (!isSideBySide() || performance.now() < suppressEditorUntil) return;
+    const top = editor.getScrollInfo().top;
+    syncPreviewToLine(editor.lineAtHeight(top, "local"), false);
+  });
+  editor.on("cursorActivity", () => {
+    if (!isSideBySide() || performance.now() < suppressEditorUntil) return;
+    syncPreviewToLine(editor.getCursor().line, true);
+  });
+  preview.addEventListener("scroll", () => {
+    if (!isSideBySide() || performance.now() < suppressPreviewUntil) return;
+    syncEditorToPreview();
+  });
 }
 
 function renderAI() {
@@ -242,6 +330,50 @@ function renderAliases() {
   }
 }
 
+function renderConflicts() {
+  const items = card.conflicts || [];
+  const badge = document.getElementById("conflict-badge");
+  const section = document.getElementById("conflict-section");
+  const list = document.getElementById("conflict-card-list");
+  badge.hidden = items.length === 0;
+  section.hidden = items.length === 0;
+  list.replaceChildren();
+  for (const item of items) {
+    const entry = document.createElement("li");
+    const head = document.createElement("p");
+    head.className = "variant-text";
+    head.textContent = item.field === "front" ? "正面冲突" : "背面冲突";
+    entry.append(head);
+    if (item.note) {
+      const note = document.createElement("p");
+      note.className = "variant-meta";
+      note.textContent = item.note;
+      entry.append(note);
+    }
+    const compare = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "查看两侧内容";
+    const body = document.createElement("div");
+    body.className = "conflict-compare";
+    for (const [label, value] of [
+      ["系统", item.system_value],
+      ["Anki", item.anki_value],
+    ]) {
+      const block = document.createElement("div");
+      const title = document.createElement("span");
+      title.className = "conflict-side-label";
+      title.textContent = label;
+      const pre = document.createElement("pre");
+      pre.textContent = value || "（空）";
+      block.append(title, pre);
+      body.append(block);
+    }
+    compare.append(summary, body);
+    entry.append(compare);
+    list.append(entry);
+  }
+}
+
 function renderModuleOptions(tree) {
   moduleSelect.replaceChildren();
   for (const node of window.cm.flattenModules(tree)) {
@@ -258,6 +390,7 @@ function applySaved(updated) {
   renderInfo();
   renderVariants();
   renderAliases();
+  renderConflicts();
   renderSources();
   renderAI();
   if (card.module_id) moduleSelect.value = String(card.module_id);
@@ -394,6 +527,7 @@ async function init() {
       });
       editor.setValue(card.back_md);
       editor.on("change", schedulePreview);
+      bindScrollSync();
     } else {
       backTextarea.value = card.back_md;
       backTextarea.addEventListener("input", schedulePreview);
@@ -402,6 +536,7 @@ async function init() {
     renderInfo();
     renderVariants();
     renderAliases();
+    renderConflicts();
     renderSources();
     renderModuleOptions(modules);
     renderPreview();

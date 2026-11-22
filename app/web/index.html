@@ -51,6 +51,7 @@
         <dl class="status-list">
           <div><dt>待推送</dt><dd id="anki-pending">—</dd></div>
           <div><dt>已匹配笔记</dt><dd id="anki-matched">—</dd></div>
+          <div><dt>待处理冲突</dt><dd id="anki-conflicts">—</dd></div>
           <div><dt>最近推送</dt><dd id="anki-last-push">—</dd></div>
           <div><dt>最近备份</dt><dd id="anki-backup">—</dd></div>
         </dl>
@@ -58,6 +59,7 @@
           <button type="button" class="ghost" id="anki-check">检测连接</button>
           <button type="button" class="ghost" id="anki-takeover">接管匹配</button>
           <button type="button" id="anki-push">立即推送</button>
+          <button type="button" class="ghost" id="anki-pull">从 Anki 拉取</button>
           <button type="button" class="ghost" id="anki-sync">同步 AnkiWeb</button>
         </div>
         <div class="progress-wrap" id="anki-progress" hidden>
@@ -82,6 +84,20 @@
           <button type="button" class="ghost" id="anki-audit">开始体检</button>
         </div>
         <div class="audit-result" id="audit-result" hidden></div>
+      </section>
+
+      <section class="panel">
+        <h2>同步冲突</h2>
+        <p class="hint">
+          系统与 Anki 修改了同一字段时不会自动覆盖。选择保留一侧，或先打开卡片手动编辑，再回来选择「用系统」。
+        </p>
+        <div class="conflict-list" id="conflict-list">
+          <p class="hint">加载中…</p>
+        </div>
+        <div class="conflict-resolved" id="conflict-resolved" hidden>
+          <h3>最近已解决</h3>
+          <div class="conflict-list" id="conflict-resolved-list"></div>
+        </div>
       </section>
 
       <section class="panel">

@@ -5,7 +5,18 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import config
-from ..anki import AnkiClient, AnkiError, audit, push, sync_anki, takeover
+from ..anki import (
+    AnkiClient,
+    AnkiError,
+    audit,
+    list_conflicts,
+    pull,
+    push,
+    resolve_conflict,
+    sync_anki,
+    takeover,
+    undo_conflict,
+)
 from ..anki.service import summary
 from ..db import connect, utc_now
 from .settings import load_settings
@@ -69,6 +80,8 @@ def _run_job(job_id: str, action: str, settings: dict) -> None:
                 settings["anki_sync_enabled"],
                 progress,
             )
+        elif action == "pull":
+            result = pull(client, settings["anki_model"], progress)
         else:
             result = sync_anki(
                 client,
@@ -213,6 +226,49 @@ def start_push() -> dict:
 @router.post("/sync")
 def start_sync() -> dict:
     return _start("sync")
+
+
+@router.post("/pull")
+def start_pull() -> dict:
+    return _start("pull")
+
+
+@router.get("/conflicts")
+def get_conflicts(status: str = "pending", limit: int = 100) -> dict:
+    try:
+        return list_conflicts(status, limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class ConflictResolveIn(BaseModel):
+    choice: str = Field(pattern="^(system|anki)$")
+
+
+@router.post("/conflicts/{conflict_id}/resolve")
+def resolve(conflict_id: int, payload: ConflictResolveIn) -> dict:
+    settings = load_settings()
+    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
+    try:
+        return resolve_conflict(client, conflict_id, payload.choice)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except AnkiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/conflicts/{conflict_id}/undo")
+def undo(conflict_id: int) -> dict:
+    try:
+        return undo_conflict(conflict_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/logs")
