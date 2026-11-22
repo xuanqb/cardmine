@@ -135,6 +135,37 @@ body {
   align-items: start;
 }
 
+.layout.settings-layout {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: 1120px;
+}
+
+.settings-layout .settings-panel,
+.settings-layout .conflict-panel {
+  grid-column: 1 / -1;
+}
+
+.settings-layout .settings-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 28px;
+  align-content: start;
+}
+
+.settings-layout .settings-panel h2,
+.settings-layout .settings-panel .actions {
+  grid-column: 1 / -1;
+}
+
+.settings-layout .settings-panel h2 {
+  margin-bottom: 0;
+}
+
+.settings-layout .settings-panel fieldset {
+  min-width: 0;
+  margin: 0;
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1426,6 +1457,11 @@ button.ghost:disabled {
   .layout {
     grid-template-columns: 1fr;
     padding: 0 16px 40px;
+  }
+
+  .layout.settings-layout,
+  .settings-layout .settings-panel {
+    grid-template-columns: 1fr;
   }
 
   .topbar {
