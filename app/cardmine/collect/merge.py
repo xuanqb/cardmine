@@ -5,6 +5,7 @@ import re
 import sqlite3
 import struct
 
+from .. import aliases
 from ..ai import AIClient, AIError
 from ..db import utc_now
 from ..importer.textfmt import normalize_front
@@ -255,6 +256,7 @@ class Merger:
         self.dim = int(settings["ai_embedding_dim"] or 1024)
         self.store: VectorStore | None = None
         self.vector_error: str | None = None
+        self.alias_error: str | None = None
         if client.embeddings_configured:
             try:
                 self.store = VectorStore(conn, self.dim)
@@ -269,11 +271,16 @@ class Merger:
         if self.store is None:
             return 0
         try:
-            return backfill_embeddings(self.conn, self.client, self.store)
+            total = backfill_embeddings(self.conn, self.client, self.store)
         except (AIError, sqlite3.Error) as exc:
             self.store = None
             self.vector_error = str(exc)
             return 0
+        try:
+            aliases.backfill_embeddings(self.conn, self.client, self.dim)
+        except (AIError, sqlite3.Error) as exc:
+            self.alias_error = str(exc)
+        return total
 
     def resolve(
         self, front: str, module_id: int | None, mention_id: int, subtype: str | None
@@ -285,7 +292,15 @@ class Merger:
         if row is not None:
             return "attached", row["id"]
 
-        if subtype == "personal" or self.store is None:
+        if subtype == "personal":
+            action, kp_id, _ = self._create(front, module_id, None)
+            return action, kp_id
+
+        alias_hit = aliases.find_exact(self.conn, norm)
+        if alias_hit is not None:
+            return "attached", alias_hit[1]
+
+        if self.store is None:
             action, kp_id, _ = self._create(front, module_id, None)
             return action, kp_id
 
@@ -305,7 +320,7 @@ class Merger:
             return action, kp_id
 
         allowed = module_scope(self.conn, module_id)
-        best_middle: tuple[int, float, str] | None = None
+        merged_hits: dict[int, dict] = {}
         for kp_id, score in hits:
             if score < self.low:
                 continue
@@ -319,14 +334,58 @@ class Merger:
                 kp["module_id"] is None or kp["module_id"] not in allowed
             ):
                 continue
+            current = merged_hits.get(kp_id)
+            if current is None or score > current["score"]:
+                merged_hits[kp_id] = {
+                    "score": score,
+                    "front_md": kp["front_md"],
+                    "alias": False,
+                }
 
-            reason = f"相似度 {score:.2f}"
+        try:
+            alias_hits = aliases.search(self.conn, vector, self.dim)
+        except sqlite3.Error as exc:
+            self.alias_error = str(exc)
+            alias_hits = []
+
+        for alias_row, score in alias_hits:
+            if score < self.low:
+                continue
+            owner = aliases.resolve_owner(self.conn, alias_row["owner_kp_id"])
+            if owner is None:
+                continue
+            if allowed is not None and (
+                alias_row["module_id"] is None
+                or alias_row["module_id"] not in allowed
+            ):
+                continue
+            current = merged_hits.get(owner)
+            if current is None or score > current["score"]:
+                merged_hits[owner] = {
+                    "score": score,
+                    "front_md": alias_row["front_md"],
+                    "alias": True,
+                }
+
+        best_middle: tuple[int, float, str] | None = None
+        for kp_id, hit in sorted(
+            merged_hits.items(), key=lambda item: item[1]["score"], reverse=True
+        ):
+            score = hit["score"]
+            source_front = hit["front_md"]
+            if hit["alias"]:
+                reason = (
+                    f"与已合并来源「{source_front[:60]}」相似度 {score:.2f}"
+                )
+            else:
+                reason = f"相似度 {score:.2f}"
             if score >= self.high and self.client.configured:
                 try:
-                    same, ai_reason = _verify_same(self.client, front, kp["front_md"])
+                    same, ai_reason = _verify_same(self.client, front, source_front)
                 except AIError as exc:
                     same, ai_reason = False, f"LLM 复核失败: {exc}"
-                reason = ai_reason or reason
+                if ai_reason:
+                    reason = f"{reason}；{ai_reason}" if hit["alias"] else ai_reason
                 if same:
                     return "attached", kp_id
             if best_middle is None:

@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -19,14 +19,17 @@ from .api import (
     stats_router,
 )
 from .api.settings import load_settings
+from .aliases import backfill_history
 from .collect import ensure_default_feed
-from .db import init_db
+from .db import connect, init_db
 from .scheduler import scheduler
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    with closing(connect()) as conn:
+        backfill_history(conn)
     ensure_default_feed(load_settings())
     if config.SCHEDULER_ENABLED:
         scheduler.start()

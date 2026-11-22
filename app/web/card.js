@@ -2,6 +2,8 @@ const cardId = Number(window.location.pathname.split("/").pop());
 const statusBadge = document.getElementById("status-badge");
 const statusSelect = document.getElementById("status-select");
 const moduleSelect = document.getElementById("module-select");
+const aliasSection = document.getElementById("alias-section");
+const aliasList = document.getElementById("alias-list");
 const frontInput = document.getElementById("front-input");
 const backTextarea = document.getElementById("back-input");
 const preview = document.getElementById("preview");
@@ -199,6 +201,47 @@ function renderSources() {
   }
 }
 
+function renderAliases() {
+  const items = card.aliases || [];
+  aliasSection.hidden = items.length === 0;
+  aliasList.replaceChildren();
+  for (const alias of items) {
+    const item = document.createElement("li");
+    const text = document.createElement("p");
+    text.className = "variant-text";
+    text.textContent = alias.front_md;
+    const meta = document.createElement("p");
+    meta.className = "variant-meta";
+    meta.textContent = [
+      alias.module_path || "未分类",
+      alias.merge_action_id ? `合并记录 #${alias.merge_action_id}` : "合并来源",
+    ].join(" · ");
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost alias-remove";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      const ok = window.confirm(
+        `删除这条来源问题？\n\n${alias.front_md}\n\n` +
+          "删除后不再用于后续去重，已挂接的卡片不受影响。"
+      );
+      if (!ok) return;
+      try {
+        card = await window.cm.fetchJSON(
+          `/api/cards/${cardId}/aliases/${alias.id}`,
+          { method: "DELETE" }
+        );
+        renderAliases();
+        showToast("已删除来源问题");
+      } catch (error) {
+        showToast(error.message || "删除失败", true);
+      }
+    });
+    item.append(text, meta, remove);
+    aliasList.appendChild(item);
+  }
+}
+
 function renderModuleOptions(tree) {
   moduleSelect.replaceChildren();
   for (const node of window.cm.flattenModules(tree)) {
@@ -214,6 +257,7 @@ function applySaved(updated) {
   card = updated;
   renderInfo();
   renderVariants();
+  renderAliases();
   renderSources();
   renderAI();
   if (card.module_id) moduleSelect.value = String(card.module_id);
@@ -357,6 +401,7 @@ async function init() {
 
     renderInfo();
     renderVariants();
+    renderAliases();
     renderSources();
     renderModuleOptions(modules);
     renderPreview();

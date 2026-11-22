@@ -4,7 +4,7 @@ from contextlib import closing
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .. import config, review
+from .. import aliases, config, review
 from ..anki.client import AnkiClient, AnkiError
 from ..db import connect, utc_now
 from ..importer.textfmt import normalize_front
@@ -148,12 +148,25 @@ def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
     detail["last_mention_at"] = variants[0]["created_at"] if variants else None
     detail["variants"] = [dict(item) for item in variants]
     detail["sources"] = [dict(item) for item in sources]
+    detail["aliases"] = aliases.list_for_survivor(conn, card_id)
     return detail
 
 
 @router.get("/cards/{card_id}")
 def get_card(card_id: int) -> dict:
     with closing(connect()) as conn:
+        return _fetch_detail(conn, card_id)
+
+
+@router.delete("/cards/{card_id}/aliases/{alias_id}")
+def delete_card_alias(card_id: int, alias_id: int) -> dict:
+    with closing(connect()) as conn, conn:
+        if conn.execute(
+            "SELECT 1 FROM knowledge_point WHERE id = ?", (card_id,)
+        ).fetchone() is None:
+            raise HTTPException(status_code=404, detail="卡片不存在")
+        if not aliases.delete_for_card(conn, card_id, alias_id):
+            raise HTTPException(status_code=404, detail="来源问题不存在")
         return _fetch_detail(conn, card_id)
 
 

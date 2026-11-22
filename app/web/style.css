@@ -993,6 +993,32 @@ button.ghost:disabled {
   text-decoration: none;
 }
 
+.alias-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+
+.alias-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.alias-list li {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.alias-remove {
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .muted {
   color: var(--text-muted);
 }

@@ -7,6 +7,7 @@ import time
 from contextlib import closing
 from typing import Any, Callable
 
+from . import aliases
 from .ai import AIClient, AIError
 from .collect.merge import Merger, _verify_same
 from .db import connect, utc_now
@@ -241,6 +242,7 @@ def _resolve(conn, candidate, action: str, keep_side: str = "left") -> dict:
         conn.execute(
             "UPDATE anki_sync SET pushed_hash = NULL WHERE kp_id = ?", (survivor_id,)
         )
+        aliases.record_merge(conn, action_id, survivor_id, [discarded])
         conn.execute("DELETE FROM knowledge_point WHERE id = ?", (discarded_id,))
 
     elif action == "keep":
@@ -442,6 +444,7 @@ def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
             "anki_note_id = ?, updated_at = ? WHERE id = ?",
             (merged_back, note_id, now, survivor_id),
         )
+        aliases.record_merge(conn, action_id, survivor_id, source_rows)
         conn.execute(
             f"DELETE FROM knowledge_point WHERE id IN ({source_placeholders})",
             tuple(sources),
@@ -521,6 +524,7 @@ def undo_action(action_id: int) -> dict:
             raise ReviewError("操作快照损坏，无法撤销") from exc
 
         if row["action"] in ("merge", "merge_cards"):
+            aliases.remove_merge(conn, action_id)
             kp_ids = [snapshot["id"] for snapshot in payload.get("kps") or []]
             if kp_ids:
                 conn.execute(
@@ -583,6 +587,9 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
     inserted = 0
     above = 0
     pairs = 0
+    alias_reviewed = 0
+    alias_inserted = 0
+    alias_above = 0
 
     with closing(connect()) as conn:
         merger = Merger(conn, client, settings)
@@ -594,6 +601,8 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
         _notify(progress, "补全向量", 1, 1)
         if not merger.vector_ready:
             raise ReviewError(merger.vector_error or "向量检索不可用")
+        if merger.alias_error:
+            errors.append(f"别名向量补全失败: {merger.alias_error}")
 
         vectors = merger.store.load_all()
         rows = conn.execute(
@@ -606,6 +615,7 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
             if row["id"] in vectors
         ]
         fronts = {row["id"]: row["front_md"] for row in rows}
+        alias_rows = aliases.load_all(conn, merger.dim)
 
         norms = {kp_id: math.sqrt(sum(value * value for value in vector)) for kp_id, vector in items}
         scored: list[tuple[float, int, int]] = []
@@ -631,6 +641,36 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
         scored.sort(key=lambda item: item[0], reverse=True)
         _notify(progress, "两两比对", total_rows, total_rows)
 
+        alias_best: dict[tuple[int, int], tuple[float, int, int, str]] = {}
+        for index, alias_row in enumerate(alias_rows, start=1):
+            owner = aliases.resolve_owner(conn, alias_row["owner_kp_id"])
+            if owner is None or owner not in fronts:
+                continue
+            try:
+                alias_hits = merger.store.search(alias_row["vector"], k=30)
+            except sqlite3.Error as exc:
+                errors.append(f"别名检索失败: {exc}")
+                break
+            for active_id, score in alias_hits:
+                if active_id == owner or active_id not in fronts or score < low:
+                    continue
+                key = (owner, active_id)
+                current = alias_best.get(key)
+                if current is None or score > current[0]:
+                    alias_best[key] = (
+                        score,
+                        owner,
+                        active_id,
+                        alias_row["front_md"],
+                    )
+            if index % 20 == 0:
+                _notify(progress, "别名比对", index, len(alias_rows))
+        alias_scored = sorted(
+            alias_best.values(), key=lambda item: item[0], reverse=True
+        )
+        alias_above = len(alias_scored)
+        _notify(progress, "别名比对", len(alias_rows), len(alias_rows))
+
         existing = {
             frozenset((row["left_kp_id"], row["right_kp_id"]))
             for row in conn.execute(
@@ -638,9 +678,15 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
                 "WHERE status = 'pending'"
             )
         }
+        created_pairs = set(existing)
         shortlist = [
             item
             for item in scored
+            if frozenset((item[1], item[2])) not in existing
+        ][:SCAN_VERIFY_LIMIT]
+        alias_shortlist = [
+            item
+            for item in alias_scored
             if frozenset((item[1], item[2])) not in existing
         ][:SCAN_VERIFY_LIMIT]
 
@@ -670,7 +716,42 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
             )
             conn.commit()
             inserted += 1
+            created_pairs.add(frozenset((left_id, right_id)))
         _notify(progress, "LLM 复核", len(shortlist), len(shortlist))
+
+        for index, (score, owner_id, active_id, alias_front) in enumerate(
+            alias_shortlist, start=1
+        ):
+            pair = frozenset((owner_id, active_id))
+            if pair in created_pairs:
+                continue
+            _notify(progress, "别名复核", index - 1, len(alias_shortlist))
+            try:
+                same, reason = _verify_same(
+                    client, fronts[active_id], alias_front
+                )
+            except AIError as exc:
+                errors.append(f"alias {owner_id}-{active_id}: {exc}")
+                continue
+            alias_reviewed += 1
+            if not same:
+                continue
+            if pair in created_pairs:
+                continue
+            reason_text = (
+                f"{reason or f'相似度 {score:.2f}'}（与已合并来源"
+                f"「{alias_front[:60]}」相似）"
+            )
+            conn.execute(
+                "INSERT INTO dup_candidate"
+                "(left_kp_id, right_kp_id, mention_id, score, reason, created_at) "
+                "VALUES(?, ?, NULL, ?, ?, ?)",
+                (owner_id, active_id, score, reason_text, utc_now()),
+            )
+            conn.commit()
+            created_pairs.add(pair)
+            alias_inserted += 1
+        _notify(progress, "别名复核", len(alias_shortlist), len(alias_shortlist))
 
     return {
         "knowledge_points": total_rows,
@@ -678,6 +759,10 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
         "above_threshold": above,
         "reviewed": reviewed,
         "candidates": inserted,
+        "aliases": len(alias_rows),
+        "alias_above_threshold": alias_above,
+        "alias_reviewed": alias_reviewed,
+        "alias_candidates": alias_inserted,
         "embeddings": embeddings,
         "errors": errors,
         "elapsed_ms": int((time.time() - started) * 1000),
