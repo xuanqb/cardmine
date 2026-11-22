@@ -1084,7 +1084,7 @@ def push(
                     (row["id"], str(exc)),
                 )
                 conn.commit()
-            _notify(progress, "写入卡片", index, len(rows))
+            _notify(progress, "检查卡片", index, len(rows))
 
     backup = None
     sync_status = "skipped" if not changed else "disabled"

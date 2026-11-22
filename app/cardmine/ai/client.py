@@ -48,6 +48,18 @@ class AIClient:
         self.embedding_base_url = (embedding_base_url or self.base_url).rstrip("/")
         self.embedding_api_key = embedding_api_key or self.api_key
         self.reasoning_effort = (reasoning_effort or "").strip()
+        self.usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+
+    def _record_usage(self, data: dict) -> None:
+        usage = data.get("usage") or {}
+        for key in self.usage:
+            value = usage.get(key)
+            if isinstance(value, int):
+                self.usage[key] += value
 
     @property
     def configured(self) -> bool:
@@ -101,6 +113,7 @@ class AIClient:
         for attempt in range(retries):
             try:
                 data = self._post("/chat/completions", payload)
+                self._record_usage(data)
                 content = data["choices"][0]["message"]["content"]
                 return parse_json(content)
             except (AIError, KeyError, IndexError, TypeError) as exc:
@@ -130,6 +143,7 @@ class AIClient:
         for attempt in range(retries):
             try:
                 data = self._post("/chat/completions", payload)
+                self._record_usage(data)
                 content = data["choices"][0]["message"]["content"]
                 if not (content or "").strip():
                     raise AIError("模型返回空内容")
@@ -160,6 +174,7 @@ class AIClient:
                     )
                     response.raise_for_status()
                     data = response.json()
+                    self._record_usage(data)
                     content = data["choices"][0]["message"]["content"]
                     if not (content or "").strip():
                         raise AIError("模型返回空内容")

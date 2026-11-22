@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api", tags=["ai-answer"])
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 _tasks: dict[int, asyncio.Task] = {}
-_ACTIVE = ("queued", "running")
+_ACTIVE = ("queued", "running", "cancelling")
 
 
 class BatchIn(BaseModel):
@@ -116,14 +116,27 @@ def clear_answer(card_id: int) -> dict:
     return get_card(card_id)
 
 
+def _is_cancelled(job_id: str) -> bool:
+    with _lock:
+        job = _jobs.get(job_id)
+        return bool(job and job.get("cancel_requested"))
+
+
 def _run_batch(job_id: str, settings: dict, card_ids: list[int], force: bool) -> None:
     def progress(phase: str, done: int, total: int) -> None:
         _set(job_id, phase=phase, processed=done, total=total)
 
     _set(job_id, status="running", started_at=utc_now())
     try:
-        report = answer.run_batch(settings, card_ids, force=force, progress=progress)
-        _set(job_id, status="done", report=report, finished_at=utc_now())
+        report = answer.run_batch(
+            settings,
+            card_ids,
+            force=force,
+            progress=progress,
+            should_stop=lambda: _is_cancelled(job_id),
+        )
+        status = "cancelled" if report.get("cancelled") else "done"
+        _set(job_id, status=status, report=report, finished_at=utc_now())
     except Exception as exc:  # noqa: BLE001
         _set(job_id, status="failed", error=str(exc), finished_at=utc_now())
 
@@ -157,6 +170,7 @@ def start_batch(payload: BatchIn) -> dict:
             "created_at": utc_now(),
             "started_at": None,
             "finished_at": None,
+            "cancel_requested": False,
         }
 
     threading.Thread(
@@ -165,6 +179,20 @@ def start_batch(payload: BatchIn) -> dict:
         daemon=True,
     ).start()
     return {"job_id": job_id, "total": len(card_ids)}
+
+
+@router.post("/ai-answer/batch/{job_id}/cancel")
+def cancel_batch(job_id: str) -> dict:
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="AI 答案任务不存在")
+        if job["status"] not in ("queued", "running"):
+            return {"cancelled": False, "status": job["status"]}
+        job["cancel_requested"] = True
+        job["status"] = "cancelling"
+        job["phase"] = "正在取消"
+    return {"cancelled": True, "status": "cancelling"}
 
 
 @router.get("/ai-answer/jobs/{job_id}")

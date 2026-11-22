@@ -90,7 +90,26 @@ function renderMarkdown(source, target) {
     };
   }
 
-  target.innerHTML = markdown.render(source);
+  if (window.DOMPurify) {
+    target.innerHTML = window.DOMPurify.sanitize(markdown.render(source), {
+      ADD_TAGS: ["font"],
+      ADD_ATTR: ["data-source-line"],
+      FORBID_TAGS: [
+        "style",
+        "form",
+        "input",
+        "button",
+        "textarea",
+        "select",
+        "option",
+      ],
+      FORBID_ATTR: ["srcdoc"],
+    });
+  } else {
+    target.innerHTML = window
+      .markdownit({ html: false, linkify: true })
+      .render(source);
+  }
   target.querySelectorAll("img").forEach((image) => {
     const src = image.getAttribute("src") || "";
     if (!src || /^(?:[a-z]+:|\/|#)/i.test(src)) return;
@@ -101,12 +120,40 @@ function renderMarkdown(source, target) {
       () => {
         const placeholder = document.createElement("span");
         placeholder.className = "media-missing";
-        placeholder.textContent = `图片缺失：${name}`;
+        placeholder.textContent = `图片缺失：${name} `;
+        const upload = document.createElement("button");
+        upload.type = "button";
+        upload.className = "link-button";
+        upload.textContent = "上传";
+        upload.addEventListener("click", () => pickMedia(name, source, target));
+        placeholder.append(upload);
         image.replaceWith(placeholder);
       },
       { once: true },
     );
   });
+}
+
+function pickMedia(name, source, target) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*,audio/*";
+  input.addEventListener("change", async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      await window.cm.fetchJSON(
+        `/api/media/upload?filename=${encodeURIComponent(name)}`,
+        { method: "POST", body: form },
+      );
+      renderMarkdown(source, target);
+    } catch (error) {
+      window.cm.toast(error.message || "上传失败", "error");
+    }
+  });
+  input.click();
 }
 
 function renderPreview() {
@@ -212,20 +259,26 @@ function renderAI() {
 
   if (aiBusy) {
     aiMeta.textContent = "生成中，可随时取消…";
+    aiMeta.classList.remove("stale");
     return;
   }
   if (status === "failed") {
     aiMeta.textContent = "生成失败";
+    aiMeta.classList.remove("stale");
     aiError.hidden = false;
     aiError.textContent = card.ai_error || "未知错误";
     return;
   }
   if (status === "running") {
     aiMeta.textContent = "上次生成未完成，可重新生成";
+    aiMeta.classList.remove("stale");
     return;
   }
+  const stale = hasAnswer && Boolean(card.ai_stale);
+  aiMeta.classList.toggle("stale", stale);
   aiMeta.textContent = hasAnswer
-    ? `生成于 ${window.cm.formatTime(card.ai_generated_at)}`
+    ? `生成于 ${window.cm.formatTime(card.ai_generated_at)}` +
+      (stale ? " · 正面已修改，答案可能已过时" : "")
     : "未生成";
 }
 

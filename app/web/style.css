@@ -486,6 +486,12 @@ button:disabled {
   font-size: 12px;
 }
 
+.progress-head .cancel-button {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
 .progress-bar {
   height: 8px;
   border: 1px solid var(--border);
@@ -1354,6 +1360,10 @@ button.ghost:disabled {
   font-size: 12px;
 }
 
+.ai-meta.stale {
+  color: #b26a00;
+}
+
 .ai-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1480,6 +1490,16 @@ button.ghost:disabled {
   border-radius: 6px;
   color: var(--danger);
   font-size: 12px;
+}
+
+.markdown-body .media-missing .link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .markdown-body a {

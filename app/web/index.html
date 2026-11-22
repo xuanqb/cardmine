@@ -284,6 +284,20 @@
             <a class="button-link" href="/api/export/backup/media">媒体清单</a>
           </div>
         </section>
+
+        <section class="panel media-panel">
+          <h2>媒体清理</h2>
+          <p class="hint">
+            扫描媒体目录中没有被卡片、冲突、别名、帖子或提及引用的文件。删除不可恢复。
+          </p>
+          <div class="sync-actions">
+            <button type="button" class="ghost" id="media-scan">扫描无引用媒体</button>
+            <button type="button" class="ghost" id="media-cleanup" hidden>
+              删除
+            </button>
+          </div>
+          <div class="audit-result" id="media-result" hidden></div>
+        </section>
       </div>
     </section>
   </main>

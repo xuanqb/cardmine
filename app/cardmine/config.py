@@ -28,6 +28,12 @@ ANKI_JOB_TIMEOUT_SECONDS = int(
     os.environ.get("CARDMINE_ANKI_JOB_TIMEOUT", "1800")
 )
 
+# 导入与媒体大小上限，避免一次上传占满磁盘或解压出超大文件
+MAX_APKG_BYTES = 1024**3
+MAX_MEDIA_BYTES = 512 * 1024**2
+MAX_IMPORT_MEDIA_BYTES = 4 * 1024**3
+MAX_MEDIA_UPLOAD_BYTES = 20 * 1024**2
+
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)

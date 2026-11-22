@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-import math
+import sqlite3
 import threading
 import time
 from contextlib import closing
@@ -695,31 +695,33 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
         alias_rows = aliases.load_all(conn, merger.dim)
         excluded = _active_exclusion_pairs(conn)
 
-        norms = {kp_id: math.sqrt(sum(value * value for value in vector)) for kp_id, vector in items}
         scored: list[tuple[float, int, int]] = []
+        seen: set[tuple[int, int]] = set()
         total_rows = len(items)
-        total_pairs = total_rows * (total_rows - 1) // 2
+        scan_k = 50
         for index, (left_id, left_vector) in enumerate(items):
-            left_norm = norms[left_id]
-            if left_norm == 0:
-                continue
-            for right_id, right_vector in items[index + 1 :]:
-                right_norm = norms[right_id]
-                if right_norm == 0:
+            try:
+                hits = merger.store.search(left_vector, k=scan_k)
+            except sqlite3.Error as exc:
+                errors.append(f"相似度检索失败: {exc}")
+                break
+            for right_id, score in hits:
+                if right_id == left_id or right_id not in fronts:
                     continue
-                if (left_id, right_id) in excluded:
+                key = _pair_key(left_id, right_id)
+                if key in seen:
                     continue
-                dot = sum(a * b for a, b in zip(left_vector, right_vector))
-                score = dot / (left_norm * right_norm)
-                if score >= low:
-                    scored.append((score, left_id, right_id))
+                seen.add(key)
+                if key in excluded or score < low:
+                    continue
+                scored.append((score, key[0], key[1]))
             if index % 20 == 0:
-                _notify(progress, "两两比对", index, total_rows)
+                _notify(progress, "相似度检索", index, total_rows)
 
-        pairs = total_pairs
+        pairs = len(seen)
         above = len(scored)
         scored.sort(key=lambda item: item[0], reverse=True)
-        _notify(progress, "两两比对", total_rows, total_rows)
+        _notify(progress, "相似度检索", total_rows, total_rows)
 
         alias_best: dict[tuple[int, int], tuple[float, int, int, str]] = {}
         for index, alias_row in enumerate(alias_rows, start=1):

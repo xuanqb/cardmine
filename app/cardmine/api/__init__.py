@@ -5,6 +5,7 @@ from .collect import router as collect_router
 from .export import router as export_router
 from .health import router as health_router
 from .imports import router as imports_router
+from .media import router as media_router
 from .modules import router as modules_router
 from .review import router as review_router
 from .settings import router as settings_router
@@ -18,6 +19,7 @@ __all__ = [
     "export_router",
     "health_router",
     "imports_router",
+    "media_router",
     "modules_router",
     "review_router",
     "settings_router",

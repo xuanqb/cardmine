@@ -11,6 +11,8 @@ from pathlib import Path
 
 import zstandard
 
+from .. import config
+
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
@@ -250,9 +252,15 @@ def write_media_file(zf: zipfile.ZipFile, index: int, dest: Path) -> tuple[str, 
 
     digest = hashlib.sha256()
     size = 0
-    with source, open(dest, "wb") as out:
-        while chunk := source.read(1024 * 1024):
-            digest.update(chunk)
-            size += len(chunk)
-            out.write(chunk)
+    try:
+        with source, open(dest, "wb") as out:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+                if size > config.MAX_MEDIA_BYTES:
+                    raise ValueError("单个媒体文件超过 512MB")
+                out.write(chunk)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
     return digest.hexdigest(), size

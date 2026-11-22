@@ -1,8 +1,11 @@
 """进程内定时抓取：按 feed 的间隔判断是否到期。"""
 
+import logging
 import threading
 from contextlib import closing
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 
 class Scheduler:
@@ -28,6 +31,7 @@ class Scheduler:
             try:
                 self._tick()
             except Exception:  # noqa: BLE001 - 定时任务不可中断主进程
+                logger.exception("定时抓取失败")
                 continue
 
     def _tick(self) -> None:

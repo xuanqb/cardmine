@@ -1,12 +1,27 @@
 """AnkiConnect 无头容器客户端。"""
 
 import json
+import time
 import urllib.error
 import urllib.request
+
+READ_ACTIONS = {
+    "version",
+    "modelNames",
+    "modelFieldNames",
+    "deckNames",
+    "findNotes",
+    "notesInfo",
+    "retrieveMediaFile",
+}
 
 
 class AnkiError(Exception):
     pass
+
+
+class AnkiTransientError(AnkiError):
+    """连接失败、超时或 5xx，读请求可以重试。"""
 
 
 class AnkiClient:
@@ -14,6 +29,16 @@ class AnkiClient:
         self.url = url.rstrip("/")
 
     def call(self, action: str, timeout: int = 60, **params):
+        attempts = 3 if action in READ_ACTIONS else 1
+        for attempt in range(attempts):
+            try:
+                return self._call_once(action, timeout, **params)
+            except AnkiTransientError:
+                if attempt + 1 >= attempts:
+                    raise
+                time.sleep(0.5 * (2**attempt))
+
+    def _call_once(self, action: str, timeout: int, **params):
         payload = json.dumps(
             {"action": action, "version": 6, "params": params}, ensure_ascii=False
         ).encode("utf-8")
@@ -28,13 +53,16 @@ class AnkiClient:
                 data = json.load(response)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")
-            raise AnkiError(f"Anki 容器返回 HTTP {exc.code}: {body[:200]}") from exc
+            message = f"Anki 容器返回 HTTP {exc.code}: {body[:200]}"
+            if exc.code >= 500:
+                raise AnkiTransientError(message) from exc
+            raise AnkiError(message) from exc
         except urllib.error.URLError as exc:
-            raise AnkiError(f"无法连接 Anki 容器: {exc.reason}") from exc
+            raise AnkiTransientError(f"无法连接 Anki 容器: {exc.reason}") from exc
         except TimeoutError as exc:
-            raise AnkiError("Anki 容器响应超时") from exc
+            raise AnkiTransientError("Anki 容器响应超时") from exc
         except json.JSONDecodeError as exc:
-            raise AnkiError("Anki 容器返回了非 JSON 响应") from exc
+            raise AnkiTransientError("Anki 容器返回了非 JSON 响应") from exc
 
         if data.get("error"):
             raise AnkiError(str(data["error"]))

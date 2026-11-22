@@ -351,7 +351,7 @@ function renderScanSummary(report) {
   scanSummary.hidden = false;
   const parts = [
     `扫描 ${report.knowledge_points || 0} 张卡`,
-    `${report.pairs || 0} 对比对`,
+    `${report.pairs || 0} 对候选`,
     `超阈值 ${report.above_threshold || 0} 对`,
     `AI 复核 ${report.reviewed || 0} 对`,
     `新增候选 ${report.candidates || 0} 条`,

@@ -536,6 +536,93 @@ function renderAudit(result) {
   }
 }
 
+const mediaResult = document.getElementById("media-result");
+const mediaScan = document.getElementById("media-scan");
+const mediaCleanup = document.getElementById("media-cleanup");
+
+function renderMediaOrphans(result) {
+  mediaResult.replaceChildren();
+  mediaResult.hidden = false;
+
+  const summary = document.createElement("p");
+  summary.className = "audit-summary";
+  if (!result.count) {
+    summary.textContent = "没有发现无引用媒体。";
+    mediaCleanup.hidden = true;
+    mediaResult.append(summary);
+    return;
+  }
+
+  summary.textContent = `发现 ${result.count} 个无引用文件，共 ${formatSize(result.size)}`;
+  mediaResult.append(summary);
+
+  const list = document.createElement("div");
+  list.className = "audit-list";
+  for (const item of result.items || []) {
+    const row = document.createElement("div");
+    row.className = "audit-row";
+    const name = document.createElement("span");
+    name.className = "audit-front";
+    name.textContent = item.filename;
+    const size = document.createElement("span");
+    size.className = "audit-meta";
+    size.textContent = formatSize(item.size);
+    row.append(name, size);
+    list.append(row);
+  }
+  mediaResult.append(list);
+
+  if (result.truncated) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = `仅显示前 ${(result.items || []).length} 个，删除时会处理全部。`;
+    mediaResult.append(hint);
+  }
+
+  mediaCleanup.hidden = false;
+  mediaCleanup.textContent = `删除 ${result.count} 个文件`;
+}
+
+async function scanMediaOrphans() {
+  mediaScan.disabled = true;
+  try {
+    const result = await fetchJSON("/api/media/orphans");
+    renderMediaOrphans(result);
+  } catch (error) {
+    showToast(error.message || "扫描失败", true);
+  } finally {
+    mediaScan.disabled = false;
+  }
+}
+
+async function cleanupMedia() {
+  if (mediaCleanup.hidden) return;
+  const ok = window.confirm(
+    `${mediaCleanup.textContent}，删除后无法恢复。确认继续？`,
+  );
+  if (!ok) return;
+
+  mediaCleanup.disabled = true;
+  try {
+    const result = await fetchJSON("/api/media/cleanup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    });
+    const failed = result.failed || [];
+    showToast(
+      `已删除 ${result.deleted} 个文件，释放 ${formatSize(result.size)}` +
+        (failed.length ? `，${failed.length} 个失败` : ""),
+      failed.length > 0,
+    );
+    await scanMediaOrphans();
+  } catch (error) {
+    showToast(error.message || "清理失败", true);
+  } finally {
+    mediaCleanup.disabled = false;
+  }
+}
+
 function conflictSide(title, text) {
   const side = document.createElement("div");
   side.className = "conflict-side";
@@ -770,6 +857,8 @@ document
 document
   .getElementById("anki-audit")
   .addEventListener("click", () => startJob("audit", renderAudit));
+mediaScan.addEventListener("click", scanMediaOrphans);
+mediaCleanup.addEventListener("click", cleanupMedia);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

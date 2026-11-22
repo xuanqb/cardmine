@@ -167,6 +167,7 @@ def _import_package(package: Package, notify: Progress) -> ImportReport:
 
         with zipfile.ZipFile(package.path) as zf:
             seen: set[str] = set()
+            total_bytes = 0
             for order, (index, name) in enumerate(sorted(package.media.items()), start=1):
                 filename = _safe_filename(name)
                 try:
@@ -175,6 +176,13 @@ def _import_package(package: Package, notify: Progress) -> ImportReport:
                     seen.add(filename)
                     dest = config.MEDIA_DIR / filename
                     sha256, size = write_media_file(zf, index, dest)
+                    total_bytes += size
+                    if total_bytes > config.MAX_IMPORT_MEDIA_BYTES:
+                        dest.unlink(missing_ok=True)
+                        report.errors.append(
+                            "媒体总大小超过 4GB，已停止导入剩余媒体"
+                        )
+                        break
                     mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
                     conn.execute(
                         "INSERT INTO media(filename, sha256, size, mime, path, created_at) "

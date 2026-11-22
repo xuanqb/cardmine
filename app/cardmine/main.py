@@ -13,6 +13,7 @@ from .api import (
     export_router,
     health_router,
     imports_router,
+    media_router,
     modules_router,
     review_router,
     settings_router,
@@ -47,6 +48,7 @@ app.include_router(collect_router)
 app.include_router(export_router)
 app.include_router(health_router)
 app.include_router(imports_router)
+app.include_router(media_router)
 app.include_router(modules_router)
 app.include_router(review_router)
 app.include_router(settings_router)

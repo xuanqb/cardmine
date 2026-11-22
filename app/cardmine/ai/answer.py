@@ -194,12 +194,12 @@ def _prepare_card(card_id: int, force: bool):
         return dict(card), variants
 
 
-def _save_answer(card_id: int, answer: str) -> None:
+def _save_answer(card_id: int, answer: str, front_norm: str | None) -> None:
     with closing(connect()) as conn, conn:
         conn.execute(
             "UPDATE knowledge_point SET ai_back_md = ?, ai_status = 'done', "
-            "ai_error = NULL, ai_generated_at = ? WHERE id = ?",
-            (answer, utc_now(), card_id),
+            "ai_error = NULL, ai_generated_at = ?, ai_front_norm = ? WHERE id = ?",
+            (answer, utc_now(), front_norm, card_id),
         )
 
 
@@ -235,7 +235,7 @@ def _generate_with_client(
     except AIError as exc:
         _mark_failed(card_id, str(exc))
         raise
-    _save_answer(card_id, answer)
+    _save_answer(card_id, answer, card.get("front_norm"))
     return {"card_id": card_id, "skipped": False}
 
 
@@ -254,7 +254,7 @@ async def _generate_with_client_async(
     except AIError as exc:
         _mark_failed(card_id, str(exc))
         raise
-    _save_answer(card_id, answer)
+    _save_answer(card_id, answer, card.get("front_norm"))
     return {"card_id": card_id, "skipped": False}
 
 
@@ -283,6 +283,7 @@ def run_batch(
     card_ids: list[int],
     force: bool = False,
     progress: Progress | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict:
     if not _batch_lock.acquire(blocking=False):
         raise RuntimeError("已有 AI 答案任务在运行")
@@ -297,9 +298,18 @@ def run_batch(
             "done": 0,
             "skipped": 0,
             "failed": 0,
+            "cancelled": False,
             "errors": [],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
         }
         for index, card_id in enumerate(card_ids, start=1):
+            if should_stop and should_stop():
+                report["cancelled"] = True
+                break
             _notify(progress, "生成 AI 答案", index - 1, len(card_ids))
             try:
                 result = _generate_with_client(client, card_id, force, profile)
@@ -311,7 +321,9 @@ def run_batch(
                 report["skipped"] += 1
             else:
                 report["done"] += 1
-        _notify(progress, "生成 AI 答案", len(card_ids), len(card_ids))
+        report["usage"] = dict(client.usage)
+        if not report["cancelled"]:
+            _notify(progress, "生成 AI 答案", len(card_ids), len(card_ids))
         return report
     finally:
         _batch_lock.release()

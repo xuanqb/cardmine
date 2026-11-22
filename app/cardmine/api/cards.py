@@ -144,6 +144,11 @@ def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
     ).fetchall()
 
     detail = dict(row)
+    detail["ai_stale"] = bool(
+        (detail.get("ai_back_md") or "").strip()
+        and detail.get("ai_front_norm")
+        and detail["ai_front_norm"] != detail.get("front_norm")
+    )
     detail["mention_count"] = len(variants)
     detail["last_mention_at"] = variants[0]["created_at"] if variants else None
     detail["variants"] = [dict(item) for item in variants]

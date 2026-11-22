@@ -51,9 +51,19 @@ async def upload_apkg(file: UploadFile = File(...)) -> dict:
     job_id = uuid.uuid4().hex[:12]
     dest = upload_dir / f"{job_id}-{filename}"
 
-    with open(dest, "wb") as out:
-        while chunk := await file.read(1024 * 1024):
-            out.write(chunk)
+    size = 0
+    try:
+        with open(dest, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > config.MAX_APKG_BYTES:
+                    raise HTTPException(
+                        status_code=413, detail="apkg 文件超过 1GB，已拒绝导入"
+                    )
+                out.write(chunk)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
 
     job = {
         "job_id": job_id,
