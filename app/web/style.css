@@ -998,6 +998,55 @@ button.ghost:disabled {
   transition: max-width 0.18s ease, transform 0.18s ease;
 }
 
+body.editor-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+body.editor-page .editor-layout {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+body.editor-page .info-panel {
+  position: static;
+  max-height: none;
+  overflow: auto;
+}
+
+body.editor-page .editor-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.editor-page .editor-split {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+
+body.editor-page .editor-pane,
+body.editor-page .preview-pane {
+  height: 100%;
+  min-height: 0;
+}
+
+body.editor-page .CodeMirror,
+body.editor-page #back-input,
+body.editor-page .preview-pane .markdown-body {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
 .info-panel {
   position: sticky;
   top: 20px;
@@ -1374,10 +1423,6 @@ body.drawer-open {
 }
 
 @media (min-width: 1400px) {
-  body.drawer-open {
-    overflow: auto;
-  }
-
   body.drawer-open .drawer-backdrop {
     display: none;
   }
@@ -1496,6 +1541,7 @@ body.drawer-open {
   min-height: 0;
   margin-top: 14px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 2px;
 }
 
@@ -1758,6 +1804,38 @@ body.drawer-open {
 
   .editor-split {
     grid-template-columns: 1fr;
+  }
+
+  body.editor-page {
+    display: block;
+    height: auto;
+    overflow: auto;
+  }
+
+  body.editor-page .editor-layout {
+    display: grid;
+    flex: none;
+    height: auto;
+    overflow: visible;
+  }
+
+  body.editor-page .info-panel,
+  body.editor-page .editor-panel {
+    display: block;
+    height: auto;
+    overflow: visible;
+  }
+
+  body.editor-page .editor-split {
+    display: grid;
+    flex: none;
+  }
+
+  body.editor-page .CodeMirror,
+  body.editor-page #back-input,
+  body.editor-page .preview-pane .markdown-body {
+    flex: none;
+    height: 40vh;
   }
 
   .preview-pane .markdown-body {
