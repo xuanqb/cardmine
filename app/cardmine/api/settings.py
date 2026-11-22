@@ -87,7 +87,14 @@ def update_settings(payload: SettingsIn) -> dict[str, Any]:
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
 
     effort = updates.get("ai_answer_reasoning_effort")
-    if effort is not None and effort not in {"", "low", "medium", "high", "max"}:
+    if effort is not None and effort not in {
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    }:
         raise HTTPException(status_code=400, detail="不支持的思考强度")
 
     merged = {**load_settings(), **updates}
