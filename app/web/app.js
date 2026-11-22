@@ -2,6 +2,9 @@ const form = document.getElementById("settings-form");
 const toast = document.getElementById("toast");
 const saveButton = document.getElementById("save-button");
 const healthBox = document.getElementById("health");
+const settingsTabs = Array.from(document.querySelectorAll(".settings-tab"));
+const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
+const conflictTabCount = document.getElementById("conflict-tab-count");
 
 const ankiBox = document.querySelector(".sync-state");
 const ankiAlert = document.getElementById("anki-alert");
@@ -53,6 +56,34 @@ function showToast(message, isError = false) {
     toast.hidden = true;
   }, 2600);
 }
+
+function activateSettingsTab(name) {
+  for (const tab of settingsTabs) {
+    const active = tab.dataset.tab === name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  for (const panel of tabPanels) {
+    const active = panel.id === `tab-${name}`;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  }
+}
+
+for (const tab of settingsTabs) {
+  tab.addEventListener("click", () => {
+    activateSettingsTab(tab.dataset.tab);
+    history.replaceState(null, "", `#${tab.dataset.tab}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+}
+
+const initialTab = location.hash.slice(1);
+activateSettingsTab(
+  settingsTabs.some((tab) => tab.dataset.tab === initialTab)
+    ? initialTab
+    : "general",
+);
 
 async function fetchJSON(url, options = {}) {
   const response = await fetch(url, options);
@@ -640,6 +671,9 @@ async function loadConflicts() {
     const pending = await fetchJSON(
       "/api/anki/conflicts?status=pending&limit=200",
     );
+    const pendingCount = pending.total ?? pending.items.length;
+    conflictTabCount.textContent = pendingCount;
+    conflictTabCount.hidden = pendingCount === 0;
     conflictList.replaceChildren();
     if (!pending.items.length) {
       conflictList.append(emptyHint("没有待处理冲突。"));
