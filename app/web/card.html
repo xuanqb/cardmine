@@ -96,6 +96,7 @@
         </label>
         <div class="editor-actions">
           <a href="/cards" class="button-link">返回列表</a>
+          <button type="button" class="ghost" id="ai-open">AI 对话</button>
           <button type="button" class="ghost" id="save-ready-button">保存并整理</button>
           <button type="button" id="save-button">保存</button>
         </div>
@@ -111,26 +112,60 @@
           <div class="markdown-body" id="preview"></div>
         </div>
       </div>
-
-      <section class="ai-panel">
-        <div class="ai-head">
-          <div>
-            <h3>AI 建议答案</h3>
-            <p class="ai-meta" id="ai-meta">未生成</p>
-          </div>
-          <div class="ai-actions">
-            <button type="button" class="ghost" id="ai-generate">生成 AI 答案</button>
-            <button type="button" class="ghost" id="ai-cancel" hidden>取消生成</button>
-            <button type="button" class="ghost" id="ai-adopt" hidden>采用（覆盖）</button>
-            <button type="button" class="ghost" id="ai-append" hidden>追加到末尾</button>
-            <button type="button" class="ghost" id="ai-clear" hidden>清空</button>
-          </div>
-        </div>
-        <div class="markdown-body ai-body" id="ai-body" hidden></div>
-        <p class="ai-error" id="ai-error" hidden></p>
-      </section>
     </section>
   </main>
+
+  <div class="drawer-backdrop" id="ai-drawer-backdrop" hidden></div>
+  <aside class="ai-drawer" id="ai-drawer" hidden aria-label="AI 对话">
+    <header class="ai-drawer-head">
+      <div>
+        <h2>AI 对话</h2>
+        <p class="ai-meta" id="ai-meta">未生成当前答案</p>
+      </div>
+      <button type="button" class="ghost" id="ai-drawer-close">关闭</button>
+    </header>
+
+    <div class="ai-toolbar">
+      <select id="ai-thread-select" class="ai-thread-select"></select>
+      <button type="button" class="ghost" id="ai-thread-new">新对话</button>
+      <button type="button" class="ghost" id="ai-thread-delete" hidden>
+        删除对话
+      </button>
+      <button type="button" class="ghost" id="ai-generate">生成答案</button>
+    </div>
+
+    <div class="ai-current" id="ai-current" hidden>
+      <div class="ai-current-head">
+        <span>当前答案</span>
+        <div class="ai-actions">
+          <button type="button" class="ghost" id="ai-adopt">采用（覆盖）</button>
+          <button type="button" class="ghost" id="ai-append">追加到末尾</button>
+          <button type="button" class="ghost" id="ai-clear">清空</button>
+        </div>
+      </div>
+      <div class="markdown-body ai-body" id="ai-body"></div>
+    </div>
+
+    <p class="ai-stale-banner" id="ai-thread-stale" hidden>
+      正面已修改，历史消息基于旧题面
+    </p>
+
+    <div class="ai-messages" id="ai-messages"></div>
+
+    <form class="ai-composer" id="ai-composer">
+      <textarea
+        id="ai-input"
+        rows="3"
+        placeholder="继续追问，或要求改写当前答案…"
+      ></textarea>
+      <div class="ai-composer-actions">
+        <span class="ai-meta" id="ai-status"></span>
+        <button type="button" class="ghost" id="ai-stop" hidden>停止</button>
+        <button type="submit" id="ai-send">发送</button>
+      </div>
+    </form>
+    <p class="ai-error" id="ai-error" hidden></p>
+  </aside>
 
   <div class="toast" id="toast" hidden></div>
 

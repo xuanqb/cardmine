@@ -17,12 +17,6 @@ const prevButton = document.getElementById("prev");
 const nextButton = document.getElementById("next");
 const pageInfo = document.getElementById("page-info");
 const treeAll = document.getElementById("tree-all");
-const aiBatchButton = document.getElementById("ai-batch-button");
-const aiBatchProgress = document.getElementById("ai-batch-progress");
-const aiBatchPhase = document.getElementById("ai-batch-phase");
-const aiBatchCount = document.getElementById("ai-batch-count");
-const aiBatchFill = document.getElementById("ai-batch-fill");
-const aiBatchCancel = document.getElementById("ai-batch-cancel");
 const mergeButton = document.getElementById("merge-button");
 const mergeModal = document.getElementById("merge-modal");
 const mergeCardList = document.getElementById("merge-card-list");
@@ -36,9 +30,6 @@ let mergeDetails = [];
 let mergeSurvivorId = null;
 let mergeBusy = false;
 let deleteUnclaimedNotes = false;
-
-let aiBatchRunning = false;
-let aiBatchJobId = null;
 
 const FILTER_KEY = "cardmine.cards.filters";
 const SORT_VALUES = new Set(["updated_desc", "mentions_desc", "recent_desc"]);
@@ -312,102 +303,6 @@ async function loadModules() {
   }
 }
 
-function renderBatchProgress(job) {
-  aiBatchProgress.hidden = false;
-  aiBatchPhase.textContent = job.phase || "运行中";
-  const total = job.total || 0;
-  const done = job.processed || 0;
-  aiBatchCount.textContent = total ? `${done} / ${total}` : "";
-  aiBatchFill.style.width = total
-    ? `${Math.min(100, Math.round((done / total) * 100))}%`
-    : "0%";
-}
-
-function pollBatch(jobId) {
-  return new Promise((resolve, reject) => {
-    const timer = setInterval(async () => {
-      try {
-        const job = await window.cm.fetchJSON(`/api/ai-answer/jobs/${jobId}`);
-        if (job.status === "done" || job.status === "cancelled") {
-          clearInterval(timer);
-          renderBatchProgress(job);
-          resolve(job);
-        } else if (job.status === "failed") {
-          clearInterval(timer);
-          reject(new Error(job.error || "生成任务失败"));
-        } else {
-          renderBatchProgress(job);
-        }
-      } catch (error) {
-        clearInterval(timer);
-        reject(error);
-      }
-    }, 1200);
-  });
-}
-
-async function runBatch() {
-  if (aiBatchRunning) return;
-  aiBatchRunning = true;
-  aiBatchButton.disabled = true;
-  aiBatchCancel.hidden = false;
-  aiBatchCancel.disabled = false;
-  renderBatchProgress({ phase: "排队中", processed: 0, total: 0 });
-
-  try {
-    const { job_id } = await window.cm.fetchJSON("/api/ai-answer/batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ module_id: state.moduleId, limit: 20 }),
-    });
-    aiBatchJobId = job_id;
-    const job = await pollBatch(job_id);
-    const report = job.report || {};
-    const prefix = report.cancelled ? "已取消 · " : "";
-    let summary = `${prefix}完成 ${report.done || 0} 张 · 跳过 ${
-      report.skipped || 0
-    } 张 · 失败 ${report.failed || 0} 张`;
-    if (report.usage && report.usage.total_tokens) {
-      summary += ` · ${report.usage.total_tokens} tokens`;
-    }
-    aiBatchPhase.textContent = summary;
-    aiBatchCount.textContent = "";
-    if (!report.cancelled) {
-      aiBatchFill.style.width = "100%";
-    }
-    if (report.errors && report.errors.length) {
-      aiBatchPhase.textContent += `（${report.errors[0]}）`;
-    }
-    await loadCards();
-    setTimeout(() => {
-      if (!aiBatchRunning) aiBatchProgress.hidden = true;
-    }, 6000);
-  } catch (error) {
-    aiBatchPhase.textContent = error.message || "生成失败";
-    aiBatchCount.textContent = "";
-  } finally {
-    aiBatchRunning = false;
-    aiBatchJobId = null;
-    aiBatchButton.disabled = false;
-    aiBatchCancel.hidden = true;
-  }
-}
-
-aiBatchCancel.addEventListener("click", async () => {
-  if (!aiBatchJobId) return;
-  aiBatchCancel.disabled = true;
-  try {
-    await window.cm.fetchJSON(
-      `/api/ai-answer/batch/${aiBatchJobId}/cancel`,
-      { method: "POST" },
-    );
-    aiBatchPhase.textContent = "正在取消，等待当前卡片完成…";
-  } catch (error) {
-    aiBatchCancel.disabled = false;
-    aiBatchPhase.textContent = error.message;
-  }
-});
-
 function renderMergeChoices() {
   mergeCardList.replaceChildren();
   for (const card of mergeDetails) {
@@ -626,7 +521,6 @@ nextButton.addEventListener("click", () => {
   }
 });
 
-aiBatchButton.addEventListener("click", runBatch);
 mergeButton.addEventListener("click", openMergeModal);
 mergeCancel.addEventListener("click", closeMergeModal);
 mergeConfirm.addEventListener("click", confirmMerge);

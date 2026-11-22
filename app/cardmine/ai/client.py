@@ -194,6 +194,57 @@ class AIClient:
                     await asyncio.sleep(2**attempt)
         raise AIError(f"AI 调用失败（重试 {retries} 次）: {last}")
 
+    async def chat_text_stream(self, messages: list[dict], temperature: float = 0.3):
+        """流式返回文本增量；调用方取消时 httpx 请求随生成器一起中断。"""
+        payload = {
+            "model": self.chat_model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300)) as http:
+                async with http.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                ) as response:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode("utf-8", "replace")
+                        raise AIError(
+                            f"AI 服务返回 HTTP {response.status_code}: {body[:300]}"
+                        )
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if chunk.get("usage"):
+                            self._record_usage(chunk)
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        text = (choices[0].get("delta") or {}).get("content")
+                        if text:
+                            yield text
+        except httpx.TimeoutException as exc:
+            raise AIError("AI 服务响应超时") from exc
+        except httpx.HTTPError as exc:
+            raise AIError(f"无法连接 AI 服务: {exc}") from exc
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []

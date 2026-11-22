@@ -49,6 +49,8 @@ def _references(conn) -> set[str]:
         refs |= local_media_refs(row["raw_html"], row["clean_md"])
     for row in conn.execute("SELECT context_md FROM mention"):
         refs |= local_media_refs(row["context_md"])
+    for row in conn.execute("SELECT content FROM ai_message"):
+        refs |= local_media_refs(row["content"])
     return refs
 
 

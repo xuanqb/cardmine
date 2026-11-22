@@ -12,10 +12,24 @@ const saveReadyButton = document.getElementById("save-ready-button");
 const toast = document.getElementById("toast");
 
 const aiMeta = document.getElementById("ai-meta");
+const aiStatus = document.getElementById("ai-status");
+const aiDrawer = document.getElementById("ai-drawer");
+const aiDrawerBackdrop = document.getElementById("ai-drawer-backdrop");
+const aiDrawerClose = document.getElementById("ai-drawer-close");
+const aiOpen = document.getElementById("ai-open");
+const aiCurrent = document.getElementById("ai-current");
 const aiBody = document.getElementById("ai-body");
 const aiError = document.getElementById("ai-error");
 const aiGenerate = document.getElementById("ai-generate");
-const aiCancel = document.getElementById("ai-cancel");
+const aiThreadSelect = document.getElementById("ai-thread-select");
+const aiThreadNew = document.getElementById("ai-thread-new");
+const aiThreadDelete = document.getElementById("ai-thread-delete");
+const aiThreadStale = document.getElementById("ai-thread-stale");
+const aiMessages = document.getElementById("ai-messages");
+const aiComposer = document.getElementById("ai-composer");
+const aiInput = document.getElementById("ai-input");
+const aiSend = document.getElementById("ai-send");
+const aiStop = document.getElementById("ai-stop");
 const aiAdopt = document.getElementById("ai-adopt");
 const aiAppend = document.getElementById("ai-append");
 const aiClear = document.getElementById("ai-clear");
@@ -25,7 +39,10 @@ let editor = null;
 let markdown = null;
 let toastTimer = null;
 let aiBusy = false;
-let aiController = null;
+let aiThreads = [];
+let activeThreadId = null;
+let aiStreamController = null;
+let aiMessagesPinned = true;
 let suppressPreviewUntil = 0;
 let suppressEditorUntil = 0;
 
@@ -236,13 +253,27 @@ function bindScrollSync() {
   });
 }
 
+function activeThread() {
+  return aiThreads.find((thread) => thread.id === activeThreadId) || null;
+}
+
+function openAIDrawer() {
+  aiDrawer.hidden = false;
+  aiDrawerBackdrop.hidden = false;
+  document.body.classList.add("drawer-open");
+  scrollChat(true);
+  aiInput.focus();
+}
+
+function closeAIDrawer() {
+  aiDrawer.hidden = true;
+  aiDrawerBackdrop.hidden = true;
+  document.body.classList.remove("drawer-open");
+}
+
 function renderAI() {
   const hasAnswer = Boolean((card.ai_back_md || "").trim());
-  const status = card.ai_status || "none";
-
-  aiError.hidden = true;
-  aiError.textContent = "";
-  aiBody.hidden = !hasAnswer;
+  aiCurrent.hidden = !hasAnswer;
   if (hasAnswer) {
     renderMarkdown(card.ai_back_md, aiBody);
   } else {
@@ -252,34 +283,183 @@ function renderAI() {
   aiAdopt.hidden = !hasAnswer;
   aiAppend.hidden = !hasAnswer;
   aiClear.hidden = !hasAnswer;
-  aiGenerate.disabled = aiBusy;
-  aiGenerate.textContent = hasAnswer ? "重新生成" : "生成 AI 答案";
-  aiCancel.hidden = !aiBusy;
-  aiCancel.disabled = !aiBusy;
 
-  if (aiBusy) {
-    aiMeta.textContent = "生成中，可随时取消…";
-    aiMeta.classList.remove("stale");
-    return;
-  }
-  if (status === "failed") {
-    aiMeta.textContent = "生成失败";
-    aiMeta.classList.remove("stale");
-    aiError.hidden = false;
-    aiError.textContent = card.ai_error || "未知错误";
-    return;
-  }
-  if (status === "running") {
-    aiMeta.textContent = "上次生成未完成，可重新生成";
-    aiMeta.classList.remove("stale");
-    return;
-  }
   const stale = hasAnswer && Boolean(card.ai_stale);
   aiMeta.classList.toggle("stale", stale);
   aiMeta.textContent = hasAnswer
-    ? `生成于 ${window.cm.formatTime(card.ai_generated_at)}` +
+    ? `当前答案生成于 ${window.cm.formatTime(card.ai_generated_at)}` +
       (stale ? " · 正面已修改，答案可能已过时" : "")
-    : "未生成";
+    : "未生成当前答案";
+
+  const thread = activeThread();
+  aiThreadStale.hidden = !(thread && thread.stale);
+  aiThreadDelete.hidden = !thread;
+  aiGenerate.disabled = aiBusy;
+  aiThreadNew.disabled = aiBusy;
+  aiThreadDelete.disabled = aiBusy;
+  aiThreadSelect.disabled = aiBusy || !aiThreads.length;
+  aiInput.disabled = aiBusy;
+  aiSend.disabled = aiBusy;
+  aiStop.hidden = !aiBusy;
+  aiStatus.textContent = aiBusy
+    ? "生成中…"
+    : thread
+      ? `${thread.message_count} 条消息`
+      : "选择或新建一个对话";
+}
+
+function renderThreadOptions() {
+  aiThreadSelect.replaceChildren();
+  if (!aiThreads.length) {
+    aiThreadSelect.append(new Option("暂无对话", ""));
+    aiThreadSelect.disabled = true;
+    return;
+  }
+  for (const thread of aiThreads) {
+    const label = thread.stale ? `${thread.title} · 旧题面` : thread.title;
+    aiThreadSelect.append(new Option(label, String(thread.id)));
+  }
+  aiThreadSelect.value = activeThreadId ? String(activeThreadId) : "";
+  aiThreadSelect.disabled = aiBusy;
+}
+
+function scrollChat(force) {
+  if (force || aiMessagesPinned) {
+    aiMessages.scrollTop = aiMessages.scrollHeight;
+  }
+}
+
+function messageElement(message) {
+  const article = document.createElement("article");
+  article.className = `ai-message ${message.role}`;
+
+  const head = document.createElement("div");
+  head.className = "ai-message-head";
+  const role = document.createElement("span");
+  role.textContent = message.role === "user" ? "我" : "AI";
+  head.append(role);
+  if (message.status === "interrupted") {
+    const badge = document.createElement("span");
+    badge.className = "ai-message-badge";
+    badge.textContent = "未完成";
+    head.append(badge);
+  }
+  const isCurrent =
+    message.role === "assistant" && card.ai_answer_message_id === message.id;
+  if (isCurrent) {
+    const badge = document.createElement("span");
+    badge.className = "ai-message-badge current";
+    badge.textContent = "当前答案";
+    head.append(badge);
+  }
+  article.append(head);
+
+  const body = document.createElement("div");
+  body.className = "markdown-body ai-message-body";
+  if (message.role === "assistant") {
+    renderMarkdown(message.content || "", body);
+  } else {
+    body.textContent = message.content || "";
+  }
+  article.append(body);
+
+  if (message.role === "assistant" && message.status === "done") {
+    const actions = document.createElement("div");
+    actions.className = "ai-message-actions";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost link-button";
+    button.textContent = isCurrent ? "已是当前答案" : "设为当前答案";
+    button.disabled = isCurrent;
+    button.addEventListener("click", () =>
+      setCurrentAnswer(message.id, button)
+    );
+    actions.append(button);
+    article.append(actions);
+  }
+  return article;
+}
+
+function renderChat(messages) {
+  aiMessages.replaceChildren();
+  aiMessagesPinned = true;
+  if (!messages.length) {
+    const empty = document.createElement("p");
+    empty.className = "ai-empty";
+    empty.textContent = "还没有消息。直接输入问题，或点「生成答案」。";
+    aiMessages.append(empty);
+    return;
+  }
+  for (const message of messages) {
+    aiMessages.append(messageElement(message));
+  }
+  scrollChat(true);
+}
+
+async function loadThreads(preferredId) {
+  try {
+    const data = await window.cm.fetchJSON(`/api/cards/${cardId}/ai-threads`);
+    aiThreads = data.threads || [];
+  } catch (error) {
+    showToast(error.message || "对话列表加载失败", true);
+    return;
+  }
+  if (!aiThreads.length) {
+    activeThreadId = null;
+    renderThreadOptions();
+    renderChat([]);
+    renderAI();
+    return;
+  }
+  const next =
+    aiThreads.find((thread) => thread.id === preferredId) ||
+    aiThreads.find((thread) => thread.id === activeThreadId) ||
+    aiThreads[0];
+  await openThread(next.id);
+}
+
+async function openThread(threadId) {
+  activeThreadId = Number(threadId);
+  renderThreadOptions();
+  try {
+    const data = await window.cm.fetchJSON(
+      `/api/ai-threads/${activeThreadId}/messages`
+    );
+    renderChat(data.messages || []);
+  } catch (error) {
+    showToast(error.message || "对话加载失败", true);
+    renderChat([]);
+  }
+  renderAI();
+}
+
+async function createThread(title) {
+  const data = await window.cm.fetchJSON(`/api/cards/${cardId}/ai-threads`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title || "" }),
+  });
+  aiThreads.unshift(data.thread);
+  activeThreadId = data.thread.id;
+  renderThreadOptions();
+  renderChat([]);
+  renderAI();
+  return data.thread;
+}
+
+async function setCurrentAnswer(messageId, button) {
+  button.disabled = true;
+  try {
+    card = await window.cm.fetchJSON(
+      `/api/ai-threads/${activeThreadId}/messages/${messageId}/answer`,
+      { method: "POST" }
+    );
+    await openThread(activeThreadId);
+    showToast("已设为当前答案");
+  } catch (error) {
+    button.disabled = false;
+    showToast(error.message || "设置失败", true);
+  }
 }
 
 const schedulePreview = window.cm.debounce(renderPreview, 180);
@@ -490,54 +670,196 @@ async function save(statusOverride) {
   }
 }
 
-async function generateAI() {
-  if (aiBusy) return;
-  aiBusy = true;
-  const controller = new AbortController();
-  aiController = controller;
-  renderAI();
-  try {
-    card = await window.cm.fetchJSON(`/api/cards/${cardId}/ai-answer`, {
-      method: "POST",
-      signal: controller.signal,
-    });
-    showToast("AI 答案已生成");
-  } catch (error) {
-    if (error.name !== "AbortError") {
-      try {
-        card = await window.cm.fetchJSON(`/api/cards/${cardId}`);
-      } catch (ignored) {
-        /* 保留原卡片状态 */
-      }
-      showToast(error.message || "生成失败", true);
+function parseSSE(block) {
+  let name = "message";
+  const dataLines = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) {
+      name = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
     }
-  } finally {
-    if (aiController === controller) aiController = null;
-    aiBusy = false;
-    renderAI();
+  }
+  if (!dataLines.length) return null;
+  try {
+    return { name, data: JSON.parse(dataLines.join("\n")) };
+  } catch (error) {
+    return null;
   }
 }
 
-async function cancelAI() {
-  if (!aiBusy) return;
-  aiCancel.disabled = true;
-  const controller = aiController;
+function createStreamingBubble() {
+  const article = document.createElement("article");
+  article.className = "ai-message assistant";
+  const head = document.createElement("div");
+  head.className = "ai-message-head";
+  const role = document.createElement("span");
+  role.textContent = "AI";
+  const badge = document.createElement("span");
+  badge.className = "ai-message-badge";
+  badge.textContent = "生成中";
+  head.append(role, badge);
+  const body = document.createElement("div");
+  body.className = "markdown-body ai-message-body";
+  body.textContent = "…";
+  article.append(head, body);
+  aiMessages.append(article);
+  scrollChat(true);
+  return body;
+}
+
+async function sendMessageText(text) {
+  const content = (text || "").trim();
+  if (aiBusy || !content) return;
+
+  aiBusy = true;
+  aiError.hidden = true;
+  aiError.textContent = "";
+  aiInput.value = "";
+  renderAI();
+
+  let threadId = activeThreadId;
+  let frame = 0;
+  let stopped = false;
   try {
-    await window.cm.fetchJSON(`/api/cards/${cardId}/ai-answer/cancel`, {
+    if (!threadId) {
+      const thread = await createThread("");
+      threadId = thread.id;
+    }
+
+    aiMessages.append(
+      messageElement({ id: 0, role: "user", content, status: "done" })
+    );
+    scrollChat(true);
+    const bubble = createStreamingBubble();
+
+    const controller = new AbortController();
+    aiStreamController = controller;
+    let accumulated = "";
+    let streamError = "";
+    const paint = () => {
+      frame = 0;
+      renderMarkdown(accumulated, bubble);
+      scrollChat(false);
+    };
+    const handle = (event) => {
+      if (!event) return;
+      if (event.name === "delta") {
+        accumulated += event.data.text || "";
+        if (!frame) frame = requestAnimationFrame(paint);
+      } else if (event.name === "error") {
+        streamError = event.data.message || "生成失败";
+      }
+    };
+
+    const response = await fetch(`/api/ai-threads/${threadId}/messages`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+      signal: controller.signal,
     });
-    showToast("已取消生成");
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const data = await response.json();
+        if (data.detail) message = data.detail;
+      } catch (error) {
+        /* 保留状态码提示 */
+      }
+      throw new Error(message);
+    }
+    if (!response.body) throw new Error("浏览器不支持流式响应");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let index;
+      while ((index = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        handle(parseSSE(block));
+      }
+    }
+    if (buffer.trim()) handle(parseSSE(buffer));
+    if (frame) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+    }
+    paint();
+    if (streamError) throw new Error(streamError);
   } catch (error) {
-    showToast(error.message || "取消失败", true);
+    if (error.name === "AbortError") {
+      stopped = true;
+      showToast("已停止生成");
+    } else {
+      aiError.hidden = false;
+      aiError.textContent = error.message || "生成失败";
+    }
   } finally {
-    if (controller) controller.abort();
+    if (frame) cancelAnimationFrame(frame);
+    aiStreamController = null;
+    aiBusy = false;
     try {
       card = await window.cm.fetchJSON(`/api/cards/${cardId}`);
-    } catch (ignored) {
-      /* 保留原卡片状态 */
+    } catch (error) {
+      /* 保留当前卡片状态 */
     }
-    renderAI();
+    if (stopped) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    await loadThreads(threadId);
   }
+}
+
+async function generateAnswer() {
+  if (aiBusy) return;
+  const title = ((card.front_md || "").trim().split("\n")[0] || "").slice(0, 40);
+  aiBusy = true;
+  renderAI();
+  try {
+    await createThread(title || "生成答案");
+  } catch (error) {
+    aiBusy = false;
+    renderAI();
+    showToast(error.message || "创建对话失败", true);
+    return;
+  }
+  aiBusy = false;
+  await sendMessageText("请为这道题生成一版答案。");
+}
+
+async function newThread() {
+  if (aiBusy) return;
+  try {
+    await createThread("");
+    aiInput.focus();
+  } catch (error) {
+    showToast(error.message || "创建对话失败", true);
+  }
+}
+
+async function deleteThread() {
+  if (aiBusy || !activeThreadId) return;
+  if (!window.confirm("删除这个对话？当前答案不会受影响。")) return;
+  try {
+    await window.cm.fetchJSON(`/api/ai-threads/${activeThreadId}`, {
+      method: "DELETE",
+    });
+    aiThreads = aiThreads.filter((thread) => thread.id !== activeThreadId);
+    activeThreadId = null;
+    await loadThreads();
+    showToast("已删除对话");
+  } catch (error) {
+    showToast(error.message || "删除失败", true);
+  }
+}
+
+function stopAI() {
+  if (aiStreamController) aiStreamController.abort();
 }
 
 async function clearAI() {
@@ -604,11 +926,37 @@ async function init() {
     renderModuleOptions(modules);
     renderPreview();
     renderAI();
+    await loadThreads();
 
     saveButton.addEventListener("click", () => save());
     saveReadyButton.addEventListener("click", () => save("ready"));
-    aiGenerate.addEventListener("click", generateAI);
-    aiCancel.addEventListener("click", cancelAI);
+    aiOpen.addEventListener("click", openAIDrawer);
+    aiDrawerClose.addEventListener("click", closeAIDrawer);
+    aiDrawerBackdrop.addEventListener("click", closeAIDrawer);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !aiDrawer.hidden) closeAIDrawer();
+    });
+    aiGenerate.addEventListener("click", generateAnswer);
+    aiThreadNew.addEventListener("click", newThread);
+    aiThreadDelete.addEventListener("click", deleteThread);
+    aiThreadSelect.addEventListener("change", () => {
+      if (!aiThreadSelect.value) return;
+      aiError.hidden = true;
+      aiError.textContent = "";
+      openThread(Number(aiThreadSelect.value));
+    });
+    aiComposer.addEventListener("submit", (event) => {
+      event.preventDefault();
+      sendMessageText(aiInput.value);
+    });
+    aiStop.addEventListener("click", stopAI);
+    aiMessages.addEventListener("scroll", () => {
+      aiMessagesPinned =
+        aiMessages.scrollHeight -
+          aiMessages.scrollTop -
+          aiMessages.clientHeight <
+        40;
+    });
     aiAdopt.addEventListener("click", adoptAI);
     aiAppend.addEventListener("click", appendAI);
     aiClear.addEventListener("click", clearAI);
