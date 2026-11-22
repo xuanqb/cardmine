@@ -460,8 +460,11 @@ async function setCurrentAnswer(messageId, button) {
       `/api/ai-threads/${activeThreadId}/messages/${messageId}/answer`,
       { method: "POST" }
     );
+    if ((card.ai_back_md || "").trim()) {
+      setBack(card.ai_back_md);
+    }
     await openThread(activeThreadId);
-    showToast("已设为当前答案");
+    showToast("已设为当前答案并填入背面，记得保存");
   } catch (error) {
     button.disabled = false;
     showToast(error.message || "设置失败", true);
