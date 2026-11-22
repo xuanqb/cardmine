@@ -2,6 +2,7 @@
 
 import html
 import re
+from urllib.parse import unquote
 
 _IMG_RE = re.compile(r'<img\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>', re.I)
 _SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
@@ -76,6 +77,16 @@ def normalize_front(front_md: str) -> str:
     return text.casefold()
 
 
+def normalize_media_ref(name: str) -> str:
+    """去掉 URL 片段、查询参数和 ./ 前缀，得到可落盘的媒体文件名。"""
+    clean = html.unescape(name).strip()
+    clean = clean.split("#", 1)[0].split("?", 1)[0]
+    clean = unquote(clean)
+    while clean.startswith("./"):
+        clean = clean[2:]
+    return clean
+
+
 def media_refs(*fields: str) -> set[str]:
     """提取字段中引用的媒体文件名（图片与音频）。"""
     refs: set[str] = set()
@@ -84,4 +95,5 @@ def media_refs(*fields: str) -> set[str]:
             continue
         refs.update(_IMG_RE.findall(text))
         refs.update(_SOUND_RE.findall(text))
-    return refs
+    normalized = {normalize_media_ref(name) for name in refs}
+    return {name for name in normalized if name}

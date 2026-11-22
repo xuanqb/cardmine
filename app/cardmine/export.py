@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import config
 from .db import connect
-from .importer.textfmt import markdown_to_anki
+from .importer.textfmt import markdown_to_anki, normalize_media_ref
 
 MODEL_ID = 1600000000001
 MODEL_NAME = "Basic"
@@ -144,7 +144,12 @@ def local_media_refs(*texts: str) -> set[str]:
         refs.update(_MD_IMG_RE.findall(text))
         refs.update(_HTML_IMG_RE.findall(text))
         refs.update(_SOUND_RE.findall(text))
-    return {name for name in refs if not name.startswith(_REMOTE_PREFIXES)}
+    normalized = {normalize_media_ref(name) for name in refs}
+    return {
+        name
+        for name in normalized
+        if name and not name.startswith(_REMOTE_PREFIXES)
+    }
 
 
 def _checksum(text: str) -> int:

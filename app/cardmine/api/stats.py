@@ -142,6 +142,7 @@ def _media_status(conn) -> dict:
         "referenced": len(refs),
         "stored": total,
         "missing_count": len(missing),
+        "missing": missing,
         "sample": missing[:20],
     }
 
@@ -201,6 +202,7 @@ def _alerts(fetch: dict, cards: dict, review: dict, sync: dict, ai: dict, media:
             {
                 "level": "warning",
                 "text": f"{media['missing_count']} 个被引用的媒体文件缺失",
+                "items": media.get("missing") or [],
             }
         )
     if not cards["draft"] and not cards["ready"] and not cards["archived"]:

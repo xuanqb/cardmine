@@ -1881,6 +1881,33 @@ a.mention-title:hover {
   color: #0969da;
 }
 
+.alert-details summary {
+  cursor: pointer;
+}
+
+.alert-expand {
+  margin-left: 8px;
+  font-size: 12px;
+  text-decoration: underline;
+  opacity: 0.75;
+}
+
+.alert-details[open] .alert-expand {
+  display: none;
+}
+
+.alert-detail-list {
+  max-height: 260px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  overflow: auto;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  word-break: break-all;
+}
+
 .table-wrap {
   overflow-x: auto;
 }

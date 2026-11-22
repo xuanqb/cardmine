@@ -58,7 +58,27 @@ function renderAlerts(alerts) {
   for (const alert of alerts) {
     const li = document.createElement("li");
     li.className = `alert-item ${alert.level || "info"}`;
-    li.textContent = alert.text;
+    if (alert.items && alert.items.length) {
+      const details = document.createElement("details");
+      details.className = "alert-details";
+      const summary = document.createElement("summary");
+      summary.append(alert.text);
+      const expand = document.createElement("span");
+      expand.className = "alert-expand";
+      expand.textContent = "查看列表";
+      summary.append(expand);
+      const list = document.createElement("ul");
+      list.className = "alert-detail-list";
+      for (const item of alert.items) {
+        const entry = document.createElement("li");
+        entry.textContent = item;
+        list.appendChild(entry);
+      }
+      details.append(summary, list);
+      li.append(details);
+    } else {
+      li.textContent = alert.text;
+    }
     alertList.append(li);
   }
 }
@@ -202,8 +222,9 @@ function renderStats(data) {
 
 function renderMediaSample(media) {
   const missing = document.getElementById("stat-media-missing");
-  if (media.missing_count && media.sample.length) {
-    missing.title = `缺失示例：\n${media.sample.join("\n")}`;
+  const names = media.missing || media.sample || [];
+  if (media.missing_count && names.length) {
+    missing.title = `缺失媒体（${media.missing_count}）：\n${names.join("\n")}`;
   }
 }
 
