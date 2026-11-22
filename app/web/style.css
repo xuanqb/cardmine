@@ -995,6 +995,7 @@ button.ghost:disabled {
   margin: 24px auto;
   padding: 0 24px 48px;
   align-items: start;
+  transition: max-width 0.18s ease, transform 0.18s ease;
 }
 
 .info-panel {
@@ -1364,6 +1365,32 @@ body.drawer-open {
   to {
     transform: none;
     opacity: 1;
+  }
+}
+
+.ai-drawer[hidden],
+.drawer-backdrop[hidden] {
+  display: none;
+}
+
+@media (min-width: 1400px) {
+  body.drawer-open {
+    overflow: auto;
+  }
+
+  body.drawer-open .drawer-backdrop {
+    display: none;
+  }
+
+  body.drawer-open .editor-layout {
+    max-width: min(1320px, calc(100vw - 608px));
+    transform: translateX(-280px);
+  }
+}
+
+@media (min-width: 1400px) and (max-width: 1600px) {
+  body.drawer-open .editor-split {
+    grid-template-columns: 1fr;
   }
 }
 
