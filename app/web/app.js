@@ -284,7 +284,7 @@ async function deleteAuditNotes(noteIds) {
 function renderOrphans(result) {
   const orphans = result.orphans || [];
   const section = auditSection(
-    "Anki 有、系统无",
+    "Anki 有、系统未关联",
     result.orphan_total || 0,
     orphans.length,
   );
@@ -292,7 +292,7 @@ function renderOrphans(result) {
   if (orphans.length === 0) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "没有发现孤儿 note。";
+    empty.textContent = "没有发现未关联的 note。";
     section.append(empty);
     return section;
   }
@@ -332,14 +332,17 @@ function renderOrphans(result) {
   }
 
   for (const item of orphans) {
-    const row = document.createElement("label");
+    const row = document.createElement("div");
     row.className = "audit-row";
 
+    const check = document.createElement("label");
+    check.className = "audit-check";
     const box = document.createElement("input");
     box.type = "checkbox";
     box.value = String(item.note_id);
     box.addEventListener("change", syncSelection);
     boxes.push(box);
+    check.append(box);
 
     const main = document.createElement("span");
     main.className = "audit-main";
@@ -349,8 +352,34 @@ function renderOrphans(result) {
     const meta = document.createElement("span");
     meta.className = "audit-meta";
     meta.textContent = `note ${item.note_id} · ${item.deck || "未知牌组"} · ${item.model}`;
-    main.append(front, meta);
-    row.append(box, main);
+
+    const relation = document.createElement("span");
+    relation.className = "audit-relation";
+    if (item.card_id) {
+      relation.append(document.createTextNode("已并入 "));
+      const link = document.createElement("a");
+      link.href = `/cards/${item.card_id}`;
+      link.textContent = `卡片 #${item.card_id}`;
+      relation.append(link);
+      const cardFront = (item.card_front || "").slice(0, 80);
+      if (cardFront) {
+        relation.append(document.createTextNode(`「${cardFront}」`));
+      }
+      if (item.merge_action_id) {
+        relation.append(
+          document.createTextNode(` · 合并记录 #${item.merge_action_id}`),
+        );
+      } else if (item.relation === "front") {
+        relation.append(document.createTextNode(" · 正面相同"));
+      }
+    } else if (item.relation === "merge") {
+      relation.textContent = `来自合并记录 #${item.merge_action_id}，存活卡已不存在`;
+    } else {
+      relation.textContent = "未找到关联卡片，请确认内容后再删除";
+    }
+
+    main.append(front, meta, relation);
+    row.append(check, main);
     list.append(row);
   }
 
@@ -366,6 +395,11 @@ function renderOrphans(result) {
   });
 
   section.append(list);
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "带「已并入」的 note 内容已包含在对应卡片中，可先点开确认再删除。";
+  section.append(note);
   return section;
 }
 
@@ -423,7 +457,8 @@ function renderAudit(result) {
   summary.className = "audit-summary";
   summary.textContent =
     `扫描 ${result.scanned_notes} 条 Anki note · 系统关联 ${result.system_notes} 条 · ` +
-    `孤儿 ${result.orphan_total} 条 · 失效 ${result.missing_total} 条`;
+    `未关联 ${result.orphan_total} 条（其中合并遗留 ${result.merged_total || 0} 条）· ` +
+    `失效 ${result.missing_total} 条`;
   auditResult.append(summary);
 
   const decks = result.decks || [];

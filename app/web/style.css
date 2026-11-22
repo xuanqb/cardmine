@@ -540,7 +540,13 @@ button:disabled {
 
 .audit-row input[type="checkbox"] {
   flex: none;
-  margin-top: 3px;
+  margin: 0;
+}
+
+.audit-check {
+  display: flex;
+  flex: none;
+  padding-top: 3px;
 }
 
 .audit-main {
@@ -559,6 +565,22 @@ button:disabled {
   color: var(--text-muted);
   font-size: 11px;
   word-break: break-all;
+}
+
+.audit-relation {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.audit-relation a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.audit-relation a:hover {
+  text-decoration: underline;
 }
 
 button.danger {

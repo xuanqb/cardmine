@@ -144,7 +144,7 @@ def audit(
     model_name: str,
     progress: Progress | None = None,
 ) -> dict:
-    """体检：找出 Anki 有但系统无的孤儿 note，以及系统有但 Anki 已删除的关联。"""
+    """体检：找出 Anki 有但系统未关联的 note，以及系统有但 Anki 已删除的关联。"""
     _notify(progress, "校验 Anki", 0, 1)
     client.validate(model_name)
     _notify(progress, "校验 Anki", 1, 1)
@@ -204,11 +204,14 @@ def audit(
         _notify(progress, "读取笔记", min(offset + 500, len(ordered)), len(ordered))
 
     orphans = []
+    orphan_fronts: dict[int, str] = {}
     for note_id in sorted(infos_by_id, reverse=True):
         info = infos_by_id[note_id]
         if note_id in db_notes or info["modelName"] != model_name:
             continue
         fields = info.get("fields") or {}
+        front_md = anki_to_markdown((fields.get("Front") or {}).get("value", ""))
+        orphan_fronts[note_id] = normalize_front(front_md)
         orphans.append(
             {
                 "note_id": note_id,
@@ -218,6 +221,13 @@ def audit(
                 "back": _note_preview(fields, "Back"),
             }
         )
+
+    if orphans:
+        with closing(connect()) as conn:
+            relations = _orphan_relations(conn, orphan_fronts)
+        for item in orphans:
+            item.update(relations.get(item["note_id"], {}))
+    merged_total = sum(1 for item in orphans if item.get("relation") == "merge")
 
     db_ids = sorted(db_notes)
     present: set[int] = set()
@@ -254,11 +264,128 @@ def audit(
         "scanned_notes": len(infos_by_id),
         "system_notes": len(db_ids),
         "orphan_total": len(orphans),
+        "merged_total": merged_total,
         "missing_total": len(missing),
         "orphans": orphans[:AUDIT_LIMIT],
         "missing": missing[:AUDIT_LIMIT],
         "errors": errors,
     }
+
+
+def _orphan_relations(conn, fronts: dict[int, str]) -> dict[int, dict]:
+    """为未关联的 note 找出来源合并记录和当前所属卡片。"""
+    if not fronts:
+        return {}
+
+    rows = conn.execute(
+        "SELECT id, action, payload, created_at FROM review_action "
+        "WHERE undone_at IS NULL AND action IN ('merge', 'merge_cards') "
+        "ORDER BY id"
+    ).fetchall()
+
+    merged_into: dict[int, int] = {}
+    note_actions: dict[int, dict] = {}
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        kps = payload.get("kps") or []
+        if len(kps) < 2:
+            continue
+
+        survivor_id = payload.get("survivor_id")
+        if survivor_id is None:
+            alive = [
+                kp["id"]
+                for kp in kps
+                if conn.execute(
+                    "SELECT 1 FROM knowledge_point WHERE id = ?", (kp["id"],)
+                ).fetchone()
+            ]
+            survivor_id = alive[0] if len(alive) == 1 else None
+
+        if survivor_id is not None:
+            for kp in kps:
+                if kp.get("id") != survivor_id:
+                    merged_into[kp["id"]] = survivor_id
+
+        for kp in kps:
+            if survivor_id is not None and kp.get("id") == survivor_id:
+                continue
+            note_id = kp.get("anki_note_id")
+            if note_id not in fronts:
+                continue
+            note_survivor = survivor_id
+            if note_survivor is None and len(kps) == 2:
+                other = next(item for item in kps if item is not kp)
+                note_survivor = other.get("id")
+            note_actions[int(note_id)] = {
+                "merge_action_id": row["id"],
+                "merge_at": row["created_at"],
+                "source_front": (kp.get("front_md") or "")[:120],
+                "survivor_id": note_survivor,
+            }
+
+    def card_info(card_id: int, relation: str, action: dict | None) -> dict:
+        card = conn.execute(
+            "SELECT kp.id, kp.front_md, kp.status, m.path AS module_path "
+            "FROM knowledge_point kp "
+            "LEFT JOIN module m ON m.id = kp.module_id "
+            "WHERE kp.id = ?",
+            (card_id,),
+        ).fetchone()
+        if card is None:
+            return {}
+        result = {
+            "relation": relation,
+            "card_id": card["id"],
+            "card_front": (card["front_md"] or "")[:160],
+            "card_status": card["status"],
+            "module_path": card["module_path"] or "",
+        }
+        if action:
+            result.update(
+                merge_action_id=action["merge_action_id"],
+                merge_at=action["merge_at"],
+                source_front=action["source_front"],
+            )
+        return result
+
+    result: dict[int, dict] = {}
+    for note_id, front_norm in fronts.items():
+        action = note_actions.get(note_id)
+        if action:
+            card_id = action["survivor_id"]
+            seen: set[int] = set()
+            while (
+                card_id is not None
+                and card_id in merged_into
+                and card_id not in seen
+            ):
+                seen.add(card_id)
+                card_id = merged_into[card_id]
+            if card_id is not None:
+                info = card_info(card_id, "merge", action)
+                if info:
+                    result[note_id] = info
+                    continue
+            result[note_id] = {
+                "relation": "merge",
+                "merge_action_id": action["merge_action_id"],
+                "merge_at": action["merge_at"],
+                "source_front": action["source_front"],
+            }
+            continue
+
+        card = conn.execute(
+            "SELECT id FROM knowledge_point WHERE front_norm = ? LIMIT 1",
+            (front_norm,),
+        ).fetchone()
+        if card is not None:
+            result[note_id] = card_info(card["id"], "front", None)
+
+    return result
 
 
 def _plain_text(text: str) -> str:
