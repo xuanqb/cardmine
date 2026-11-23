@@ -511,8 +511,8 @@ def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
             (survivor_id, *sources),
         )
         conn.execute(
-            "UPDATE knowledge_point SET back_md = ?, status = 'draft', "
-            "anki_note_id = ?, updated_at = ? WHERE id = ?",
+            "UPDATE knowledge_point SET back_md = ?, anki_note_id = ?, "
+            "updated_at = ? WHERE id = ?",
             (merged_back, note_id, now, survivor_id),
         )
         aliases.record_merge(conn, action_id, survivor_id, source_rows)
@@ -683,8 +683,7 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
 
         vectors = merger.store.load_all()
         rows = conn.execute(
-            "SELECT id, front_md, module_id, status FROM knowledge_point "
-            "WHERE status != 'archived' ORDER BY id"
+            "SELECT id, front_md, module_id FROM knowledge_point ORDER BY id"
         ).fetchall()
         items = [
             (row["id"], vectors[row["id"]])

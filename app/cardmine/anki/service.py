@@ -124,7 +124,8 @@ def takeover(client: AnkiClient, model_name: str, progress: Progress | None = No
         pending = {
             row["front_norm"]: row["id"]
             for row in conn.execute(
-                "SELECT id, front_norm FROM knowledge_point WHERE anki_note_id IS NULL"
+                "SELECT id, front_norm FROM knowledge_point "
+                "WHERE anki_note_id IS NULL AND status != 'archived'"
             )
         }
 
@@ -482,10 +483,17 @@ def _find_note_by_front(
     return None
 
 
-def _load_sync_rows(conn, only_ready: bool, linked_only: bool = False):
+def _load_sync_rows(
+    conn,
+    only_ready: bool,
+    linked_only: bool = False,
+    exclude_archived: bool = False,
+):
     where = []
     if only_ready:
         where.append("kp.status = 'ready'")
+    if exclude_archived:
+        where.append("kp.status != 'archived'")
     if linked_only:
         where.append(
             "(kp.anki_note_id IS NOT NULL OR s.anki_note_id IS NOT NULL)"
@@ -995,6 +1003,54 @@ def _sync_card(
     return result, errors
 
 
+def _delete_archived_notes(
+    client: AnkiClient, progress: Progress | None = None
+) -> tuple[int, list[str]]:
+    """删除归档卡关联的 Anki 笔记，成功后再清理关联与待处理冲突。"""
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            """
+            SELECT kp.id AS kp_id, kp.anki_note_id, s.anki_note_id AS sync_note_id
+            FROM knowledge_point kp
+            LEFT JOIN anki_sync s ON s.kp_id = kp.id
+            WHERE kp.status = 'archived'
+              AND (kp.anki_note_id IS NOT NULL OR s.anki_note_id IS NOT NULL)
+            ORDER BY kp.id
+            """
+        ).fetchall()
+
+    deleted = 0
+    errors: list[str] = []
+    for index, row in enumerate(rows, start=1):
+        note_id = int(row["anki_note_id"] or row["sync_note_id"])
+        try:
+            client.call("deleteNotes", timeout=15, notes=[note_id])
+        except AnkiError as exc:
+            if "not found" not in str(exc).lower():
+                with closing(connect()) as conn, conn:
+                    conn.execute(
+                        "INSERT INTO anki_sync(kp_id, last_error) VALUES(?, ?) "
+                        "ON CONFLICT(kp_id) DO UPDATE SET last_error = excluded.last_error",
+                        (row["kp_id"], str(exc)),
+                    )
+                errors.append(f"归档卡片 {row['kp_id']}: {exc}")
+                _notify(progress, "清理归档", index, len(rows))
+                continue
+        with closing(connect()) as conn, conn:
+            conn.execute(
+                "UPDATE knowledge_point SET anki_note_id = NULL WHERE id = ?",
+                (row["kp_id"],),
+            )
+            conn.execute("DELETE FROM anki_sync WHERE kp_id = ?", (row["kp_id"],))
+            conn.execute(
+                "DELETE FROM anki_conflict WHERE kp_id = ? AND status = 'pending'",
+                (row["kp_id"],),
+            )
+        deleted += 1
+        _notify(progress, "清理归档", index, len(rows))
+    return deleted, errors
+
+
 def push(
     client: AnkiClient,
     model_name: str,
@@ -1004,6 +1060,8 @@ def push(
     _notify(progress, "校验 Anki", 0, 1)
     client.validate(model_name)
     _notify(progress, "校验 Anki", 1, 1)
+
+    archived_deleted, archive_errors = _delete_archived_notes(client, progress)
 
     with closing(connect()) as conn:
         rows = _load_sync_rows(conn, only_ready=True)
@@ -1037,7 +1095,7 @@ def push(
             remote_media = set()
 
     media_uploaded = 0
-    errors: list[str] = []
+    errors: list[str] = list(archive_errors)
     for name in sorted(media_refs):
         if name in remote_media:
             continue
@@ -1052,7 +1110,8 @@ def push(
         except AnkiError as exc:
             errors.append(f"媒体 {name}: {exc}")
 
-    added = updated = pulled = conflicts = skipped = failed = changed = 0
+    added = updated = pulled = conflicts = skipped = failed = 0
+    changed = archived_deleted
     with closing(connect()) as conn:
         for index, row in enumerate(rows, start=1):
             try:
@@ -1104,6 +1163,7 @@ def push(
 
     return {
         "ready": len(rows),
+        "archived_deleted": archived_deleted,
         "changed": changed,
         "added": added,
         "updated": updated,
@@ -1129,7 +1189,9 @@ def pull(
     _notify(progress, "校验 Anki", 1, 1)
 
     with closing(connect()) as conn:
-        rows = _load_sync_rows(conn, only_ready=False, linked_only=True)
+        rows = _load_sync_rows(
+            conn, only_ready=False, linked_only=True, exclude_archived=True
+        )
     note_ids = {int(row["anki_note_id"] or row["sync_note_id"]) for row in rows}
     infos = _fetch_notes(client, note_ids, progress)
 
