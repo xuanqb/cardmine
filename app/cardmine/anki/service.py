@@ -536,53 +536,38 @@ def _fetch_notes(
     return infos
 
 
-def _note_card_ids(info: dict | None) -> list[int]:
-    if not info:
-        return []
-    return [int(card) for card in info.get("cards") or []]
-
-
-def _fetch_flags(
+def _fetch_note_flags(
     client: AnkiClient,
-    card_ids: set[int],
+    note_ids: set[int],
     progress: Progress | None = None,
-) -> dict[int, int]:
-    """读取卡片旗帜（0-7）。cardsInfo 不返回 flags 时退回 flag:N 搜索。"""
-    ordered = sorted(card_ids)
-    if not ordered:
-        return {}
-    flags: dict[int, int] = {}
-    for offset in range(0, len(ordered), 500):
-        chunk = ordered[offset : offset + 500]
-        try:
-            data = client.call("cardsInfo", cards=chunk)
-        except AnkiError as exc:
-            raise AnkiError(f"读取 Anki 旗帜失败：{exc}") from exc
-        if data and "flags" not in (data[0] or {}):
-            return _fetch_flags_by_search(client, set(ordered))
-        for card in data or []:
-            if card and card.get("cardId") is not None:
-                flags[int(card["cardId"])] = int(card.get("flags") or 0)
-        _notify(progress, "读取旗帜", min(offset + 500, len(ordered)), len(ordered))
-    return flags
-
-
-def _fetch_flags_by_search(client: AnkiClient, card_ids: set[int]) -> dict[int, int]:
-    flags = {card_id: 0 for card_id in card_ids}
+) -> dict[int, tuple[int, list[int]]]:
+    """返回 note_id -> (旗帜颜色, 带旗卡片)。基于搜索，不依赖 notesInfo 的 cards。"""
+    _ = progress
+    wanted = {int(note) for note in note_ids}
+    found: dict[int, tuple[int, list[int]]] = {}
+    if not wanted:
+        return found
     for value in range(1, 8):
         try:
-            found = client.call("findCards", query=f"flag:{value}")
+            cards = client.call("findCards", query=f"flag:{value}") or []
+            if not cards:
+                continue
+            notes = client.call("cardsToNotes", cards=[int(card) for card in cards]) or []
         except AnkiError as exc:
             raise AnkiError(f"读取 Anki 旗帜失败：{exc}") from exc
-        for card_id in found or []:
-            card_id = int(card_id)
-            if card_id in flags:
-                flags[card_id] = value
-    return flags
-
-
-def _note_flag(flags: dict[int, int], info: dict | None) -> int:
-    return max((flags.get(card, 0) for card in _note_card_ids(info)), default=0)
+        for card_id, note_id in zip(cards, notes):
+            note_id = int(note_id)
+            if note_id not in wanted:
+                continue
+            current = found.get(note_id)
+            if current is None:
+                found[note_id] = (value, [int(card_id)])
+            else:
+                found[note_id] = (
+                    max(current[0], value),
+                    [*current[1], int(card_id)],
+                )
+    return found
 
 
 def _record_anki_flag(conn, kp_id: int, flag: int) -> None:
@@ -1136,10 +1121,8 @@ def _clear_pending_flags(
         progress,
         phase="读取旗帜",
     )
-    flags = _fetch_flags(
-        client,
-        {card for info in infos.values() for card in _note_card_ids(info)},
-        progress,
+    note_flags = _fetch_note_flags(
+        client, {int(row["note_id"]) for row in rows}, progress
     )
 
     cleared = 0
@@ -1157,7 +1140,7 @@ def _clear_pending_flags(
                 )
                 _notify(progress, "清除旗帜", index, len(rows))
                 continue
-            current = _note_flag(flags, info)
+            current, cards = note_flags.get(int(row["note_id"]), (0, []))
             if current == 0:
                 conn.execute(
                     "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
@@ -1176,7 +1159,7 @@ def _clear_pending_flags(
                 _notify(progress, "清除旗帜", index, len(rows))
                 continue
             try:
-                for card_id in _note_card_ids(info):
+                for card_id in cards:
                     client.call(
                         "setSpecificValueOfCard",
                         card=card_id,
@@ -1346,11 +1329,7 @@ def pull(
         )
     note_ids = {int(row["anki_note_id"] or row["sync_note_id"]) for row in rows}
     infos = _fetch_notes(client, note_ids, progress)
-    flags_by_card = _fetch_flags(
-        client,
-        {card for info in infos.values() for card in _note_card_ids(info)},
-        progress,
-    )
+    note_flags = _fetch_note_flags(client, note_ids, progress)
 
     pulled = conflicts = skipped = 0
     errors: list[str] = []
@@ -1362,7 +1341,9 @@ def pull(
                     conn, client, model_name, row, infos.get(note_id), "pull", set()
                 )
                 _record_anki_flag(
-                    conn, row["id"], _note_flag(flags_by_card, infos.get(note_id))
+                    conn,
+                    row["id"],
+                    note_flags.get(int(note_id), (0, []))[0],
                 )
                 conn.commit()
                 pulled += result["pulled"]

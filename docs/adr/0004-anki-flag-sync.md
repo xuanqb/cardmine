@@ -11,7 +11,7 @@
 
 ## Consequences
 
-- 拉取多一次 `cardsInfo`；若该接口不返回旗帜，退回 `flag:N` 搜索。
+- 拉取改用 `findCards flag:N`（N=1–7）加 `cardsToNotes` 映射到笔记；部署的 anki-connect-server 的 `notesInfo` 不含卡片 id，`cardsInfo` 不含旗帜。
 - 旗帜变化不产生冲突，也不改变卡片的 draft / ready / archived 状态。
 - 清除后到推送成功之前，卡片继续出现在「有旗帜」筛选；推送失败可重试。
 - 推送前发现颜色被改，系统以 Anki 为准刷新，用户需要重新决定是否清除。
