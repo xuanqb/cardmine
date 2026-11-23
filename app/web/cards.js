@@ -204,6 +204,7 @@ function renderCardRow(item) {
   meta.className = "card-meta";
   const parts = [
     item.module_path ? item.module_path.replaceAll("/", " / ") : "未分类",
+    window.cm.originMeta(item.origin).label,
     `出现 ${item.mention_count} 次`,
     `更新于 ${window.cm.formatTime(item.updated_at)}`,
   ];

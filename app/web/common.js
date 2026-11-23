@@ -5,6 +5,11 @@ window.cm = (() => {
     archived: { label: "已归档", className: "archived" },
   };
 
+  const ORIGIN = {
+    crawl: { label: "RSS 抓取", className: "crawl" },
+    apkg: { label: "apkg 导入", className: "apkg" },
+  };
+
   async function fetchJSON(url, options = {}) {
     const response = await fetch(url, options);
     if (!response.ok) {
@@ -58,5 +63,16 @@ window.cm = (() => {
     return STATUS[status] || { label: status, className: "" };
   }
 
-  return { fetchJSON, debounce, formatTime, flattenModules, statusMeta };
+  function originMeta(origin) {
+    return ORIGIN[origin] || { label: origin || "未知", className: "" };
+  }
+
+  return {
+    fetchJSON,
+    debounce,
+    formatTime,
+    flattenModules,
+    statusMeta,
+    originMeta,
+  };
 })();
