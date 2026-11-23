@@ -1,6 +1,5 @@
 """审核队列：合并 / 保持独立 / 忽略，操作留痕与撤销，全库语义去重扫描。"""
 
-import hashlib
 import json
 import sqlite3
 import threading
@@ -40,16 +39,6 @@ def _snapshot(conn, table: str, where: str, params: tuple) -> list[dict]:
     return [dict(row) for row in conn.execute(f"SELECT * FROM {table} {where}", params)]
 
 
-def _content_hash(front_norm: str, back_md: str | None) -> str:
-    return hashlib.sha1(
-        f"{front_norm}\n{back_md or ''}".encode("utf-8")
-    ).hexdigest()
-
-
-def _row_hash(row) -> str:
-    return _content_hash(row["front_norm"], row["back_md"])
-
-
 def _pair_key(left_id: int, right_id: int) -> tuple[int, int]:
     return (left_id, right_id) if left_id < right_id else (right_id, left_id)
 
@@ -61,16 +50,18 @@ def _record_exclusion(conn, left, right, action_id: int, now: str) -> None:
     )
     conn.execute(
         "INSERT INTO dup_exclusion"
-        "(left_kp_id, right_kp_id, left_hash, right_hash, action_id, created_at) "
+        "(left_kp_id, right_kp_id, left_front_norm, right_front_norm, "
+        " action_id, created_at) "
         "VALUES(?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(left_kp_id, right_kp_id) DO UPDATE SET "
-        "left_hash = excluded.left_hash, right_hash = excluded.right_hash, "
+        "left_front_norm = excluded.left_front_norm, "
+        "right_front_norm = excluded.right_front_norm, "
         "action_id = excluded.action_id, created_at = excluded.created_at",
         (
             left_id,
             right_id,
-            _row_hash(first),
-            _row_hash(second),
+            first["front_norm"] or "",
+            second["front_norm"] or "",
             action_id,
             now,
         ),
@@ -79,9 +70,9 @@ def _record_exclusion(conn, left, right, action_id: int, now: str) -> None:
 
 def _active_exclusion_pairs(conn) -> set[tuple[int, int]]:
     rows = conn.execute(
-        "SELECT e.left_kp_id, e.right_kp_id, e.left_hash, e.right_hash, "
-        "lk.front_norm AS left_norm, lk.back_md AS left_back, "
-        "rk.front_norm AS right_norm, rk.back_md AS right_back "
+        "SELECT e.left_kp_id, e.right_kp_id, "
+        "e.left_front_norm, e.right_front_norm, "
+        "lk.front_norm AS left_norm, rk.front_norm AS right_norm "
         "FROM dup_exclusion e "
         "JOIN knowledge_point lk ON lk.id = e.left_kp_id "
         "JOIN knowledge_point rk ON rk.id = e.right_kp_id"
@@ -90,9 +81,8 @@ def _active_exclusion_pairs(conn) -> set[tuple[int, int]]:
     stale: list[tuple[int, int]] = []
     for row in rows:
         unchanged = (
-            _content_hash(row["left_norm"], row["left_back"]) == row["left_hash"]
-            and _content_hash(row["right_norm"], row["right_back"])
-            == row["right_hash"]
+            (row["left_front_norm"] or "") == (row["left_norm"] or "")
+            and (row["right_front_norm"] or "") == (row["right_norm"] or "")
         )
         if unchanged:
             active.add((row["left_kp_id"], row["right_kp_id"]))

@@ -106,7 +106,7 @@ function candidateActions(item) {
   keep.type = "button";
   keep.className = "ghost";
   keep.textContent = "保持独立";
-  keep.title = "标记为不同问题；两张卡片内容不变时，后续全库扫描不再提示";
+  keep.title = "标记为不同问题；两张卡片的正面不变时，后续全库扫描不再提示";
   keep.addEventListener("click", () => resolveOne(item.id, "keep"));
 
   const ignore = document.createElement("button");
