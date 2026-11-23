@@ -10,6 +10,16 @@ window.cm = (() => {
     apkg: { label: "apkg 导入", className: "origin-apkg" },
   };
 
+  const FLAGS = {
+    1: { label: "红旗", className: "flag-red" },
+    2: { label: "橙旗", className: "flag-orange" },
+    3: { label: "绿旗", className: "flag-green" },
+    4: { label: "蓝旗", className: "flag-blue" },
+    5: { label: "粉旗", className: "flag-pink" },
+    6: { label: "青旗", className: "flag-teal" },
+    7: { label: "紫旗", className: "flag-purple" },
+  };
+
   async function fetchJSON(url, options = {}) {
     const response = await fetch(url, options);
     if (!response.ok) {
@@ -67,6 +77,10 @@ window.cm = (() => {
     return ORIGIN[origin] || { label: origin || "未知", className: "" };
   }
 
+  function flagMeta(flag) {
+    return FLAGS[Number(flag)] || { label: `旗帜 ${flag}`, className: "" };
+  }
+
   return {
     fetchJSON,
     debounce,
@@ -74,5 +88,6 @@ window.cm = (() => {
     flattenModules,
     statusMeta,
     originMeta,
+    flagMeta,
   };
 })();

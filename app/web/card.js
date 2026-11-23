@@ -1,6 +1,9 @@
 const cardId = Number(window.location.pathname.split("/").pop());
 const statusBadge = document.getElementById("status-badge");
 const originBadge = document.getElementById("origin-badge");
+const flagField = document.getElementById("flag-field");
+const flagBadge = document.getElementById("flag-badge");
+const flagClear = document.getElementById("flag-clear");
 const statusSelect = document.getElementById("status-select");
 const moduleSelect = document.getElementById("module-select");
 const aliasSection = document.getElementById("alias-section");
@@ -483,6 +486,22 @@ function renderInfo() {
   const origin = window.cm.originMeta(card.origin);
   originBadge.className = `badge ${origin.className}`;
   originBadge.textContent = origin.label;
+
+  const flagValue = Number(card.anki_flag) || 0;
+  if (card.flag_clear_pending) {
+    flagField.hidden = false;
+    flagBadge.className = "badge flag-pending";
+    flagBadge.textContent = "待清除同步";
+    flagClear.hidden = true;
+  } else if (flagValue) {
+    const flag = window.cm.flagMeta(flagValue);
+    flagField.hidden = false;
+    flagBadge.className = `badge ${flag.className}`;
+    flagBadge.textContent = flag.label;
+    flagClear.hidden = false;
+  } else {
+    flagField.hidden = true;
+  }
   document.getElementById("fact-mentions").textContent = `${card.mention_count} 次`;
   document.getElementById("fact-last").textContent = window.cm.formatTime(
     card.last_mention_at
@@ -943,6 +962,21 @@ async function init() {
 
     saveButton.addEventListener("click", () => save());
     saveReadyButton.addEventListener("click", () => save("ready"));
+    flagClear.addEventListener("click", async () => {
+      if (!card || card.flag_clear_pending) return;
+      flagClear.disabled = true;
+      try {
+        card = await window.cm.fetchJSON(`/api/cards/${card.id}/flag/clear`, {
+          method: "POST",
+        });
+        renderInfo();
+        showToast("已登记清除，下次推送同步到 Anki");
+      } catch (error) {
+        showToast(error.message || "登记失败", true);
+      } finally {
+        flagClear.disabled = false;
+      }
+    });
     aiOpen.addEventListener("click", openAIDrawer);
     aiDrawerClose.addEventListener("click", closeAIDrawer);
     aiDrawerBackdrop.addEventListener("click", closeAIDrawer);

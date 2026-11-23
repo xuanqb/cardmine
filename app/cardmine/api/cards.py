@@ -41,6 +41,7 @@ def _module_ids(conn, module_id: int) -> list[int]:
 def list_cards(
     module_id: int | None = None,
     status: list[str] | None = Query(None),
+    flagged: bool = False,
     q: str | None = None,
     sort: str = "updated_desc",
     page: int = Query(1, ge=1),
@@ -75,10 +76,20 @@ def list_cards(
             )
             params.extend([pattern, pattern])
 
+        if flagged:
+            where.append(
+                "(COALESCE(s.anki_flag, 0) > 0 OR COALESCE(s.flag_clear_pending, 0) > 0)"
+            )
+
         clause = f"WHERE {' AND '.join(where)}" if where else ""
 
         total = conn.execute(
-            f"SELECT COUNT(*) FROM knowledge_point kp {clause}", params
+            f"""
+            SELECT COUNT(*) FROM knowledge_point kp
+            LEFT JOIN anki_sync s ON s.kp_id = kp.id
+            {clause}
+            """,
+            params,
         ).fetchone()[0]
 
         rows = conn.execute(
@@ -86,12 +97,15 @@ def list_cards(
             SELECT kp.id, kp.front_md, kp.status, kp.updated_at,
                    kp.origin, kp.ai_status,
                    (TRIM(COALESCE(kp.ai_back_md, '')) != '') AS has_ai_answer,
+                   COALESCE(s.anki_flag, 0) AS anki_flag,
+                   COALESCE(s.flag_clear_pending, 0) AS flag_clear_pending,
                    m.path AS module_path,
                    (SELECT COUNT(*) FROM mention me WHERE me.kp_id = kp.id) AS mention_count,
                    (SELECT MAX(me.created_at) FROM mention me WHERE me.kp_id = kp.id)
                        AS last_mention_at
             FROM knowledge_point kp
             LEFT JOIN module m ON m.id = kp.module_id
+            LEFT JOIN anki_sync s ON s.kp_id = kp.id
             {clause}
             ORDER BY {SORTS[sort]}
             LIMIT ? OFFSET ?
@@ -110,9 +124,12 @@ def list_cards(
 def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
     row = conn.execute(
         """
-        SELECT kp.*, m.path AS module_path
+        SELECT kp.*, m.path AS module_path,
+               COALESCE(s.anki_flag, 0) AS anki_flag,
+               COALESCE(s.flag_clear_pending, 0) AS flag_clear_pending
         FROM knowledge_point kp
         LEFT JOIN module m ON m.id = kp.module_id
+        LEFT JOIN anki_sync s ON s.kp_id = kp.id
         WHERE kp.id = ?
         """,
         (card_id,),
@@ -173,6 +190,34 @@ def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
 @router.get("/cards/{card_id}")
 def get_card(card_id: int) -> dict:
     with closing(connect()) as conn:
+        return _fetch_detail(conn, card_id)
+
+
+@router.post("/cards/{card_id}/flag/clear")
+def clear_anki_flag(card_id: int) -> dict:
+    """登记清除 Anki 旗帜；真正的清除在下一次推送时执行。"""
+    with closing(connect()) as conn, conn:
+        row = conn.execute(
+            """
+            SELECT COALESCE(s.anki_flag, 0) AS anki_flag
+            FROM knowledge_point kp
+            LEFT JOIN anki_sync s ON s.kp_id = kp.id
+            WHERE kp.id = ?
+            """,
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="卡片不存在")
+        if not row["anki_flag"]:
+            raise HTTPException(
+                status_code=400, detail="这张卡没有从 Anki 同步到旗帜"
+            )
+        conn.execute(
+            "INSERT INTO anki_sync(kp_id, flag_clear_pending) VALUES(?, ?) "
+            "ON CONFLICT(kp_id) DO UPDATE SET "
+            "flag_clear_pending = excluded.flag_clear_pending",
+            (card_id, row["anki_flag"]),
+        )
         return _fetch_detail(conn, card_id)
 
 

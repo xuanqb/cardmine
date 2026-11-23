@@ -536,6 +536,63 @@ def _fetch_notes(
     return infos
 
 
+def _note_card_ids(info: dict | None) -> list[int]:
+    if not info:
+        return []
+    return [int(card) for card in info.get("cards") or []]
+
+
+def _fetch_flags(
+    client: AnkiClient,
+    card_ids: set[int],
+    progress: Progress | None = None,
+) -> dict[int, int]:
+    """读取卡片旗帜（0-7）。cardsInfo 不返回 flags 时退回 flag:N 搜索。"""
+    ordered = sorted(card_ids)
+    if not ordered:
+        return {}
+    flags: dict[int, int] = {}
+    for offset in range(0, len(ordered), 500):
+        chunk = ordered[offset : offset + 500]
+        try:
+            data = client.call("cardsInfo", cards=chunk)
+        except AnkiError as exc:
+            raise AnkiError(f"读取 Anki 旗帜失败：{exc}") from exc
+        if data and "flags" not in (data[0] or {}):
+            return _fetch_flags_by_search(client, set(ordered))
+        for card in data or []:
+            if card and card.get("cardId") is not None:
+                flags[int(card["cardId"])] = int(card.get("flags") or 0)
+        _notify(progress, "读取旗帜", min(offset + 500, len(ordered)), len(ordered))
+    return flags
+
+
+def _fetch_flags_by_search(client: AnkiClient, card_ids: set[int]) -> dict[int, int]:
+    flags = {card_id: 0 for card_id in card_ids}
+    for value in range(1, 8):
+        try:
+            found = client.call("findCards", query=f"flag:{value}")
+        except AnkiError as exc:
+            raise AnkiError(f"读取 Anki 旗帜失败：{exc}") from exc
+        for card_id in found or []:
+            card_id = int(card_id)
+            if card_id in flags:
+                flags[card_id] = value
+    return flags
+
+
+def _note_flag(flags: dict[int, int], info: dict | None) -> int:
+    return max((flags.get(card, 0) for card in _note_card_ids(info)), default=0)
+
+
+def _record_anki_flag(conn, kp_id: int, flag: int) -> None:
+    conn.execute(
+        "INSERT INTO anki_sync(kp_id, anki_flag) VALUES(?, ?) "
+        "ON CONFLICT(kp_id) DO UPDATE SET anki_flag = excluded.anki_flag",
+        (kp_id, flag),
+    )
+
+
 def _ensure_deck(client: AnkiClient, decks: set[str], deck: str) -> None:
     if deck not in decks:
         client.call("createDeck", deck=deck)
@@ -1051,6 +1108,96 @@ def _delete_archived_notes(
     return deleted, errors
 
 
+def _clear_pending_flags(
+    client: AnkiClient,
+    progress: Progress | None = None,
+) -> tuple[int, list[str]]:
+    """执行待清除的旗帜：只有 Anki 当前颜色与登记时一致才清除。"""
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            """
+            SELECT kp.id AS kp_id,
+                   COALESCE(kp.anki_note_id, s.anki_note_id) AS note_id,
+                   s.flag_clear_pending
+            FROM knowledge_point kp
+            JOIN anki_sync s ON s.kp_id = kp.id
+            WHERE s.flag_clear_pending > 0
+              AND kp.status != 'archived'
+              AND COALESCE(kp.anki_note_id, s.anki_note_id) IS NOT NULL
+            ORDER BY kp.id
+            """
+        ).fetchall()
+    if not rows:
+        return 0, []
+
+    infos = _fetch_notes(
+        client,
+        {int(row["note_id"]) for row in rows},
+        progress,
+        phase="读取旗帜",
+    )
+    flags = _fetch_flags(
+        client,
+        {card for info in infos.values() for card in _note_card_ids(info)},
+        progress,
+    )
+
+    cleared = 0
+    errors: list[str] = []
+    with closing(connect()) as conn:
+        for index, row in enumerate(rows, start=1):
+            kp_id = int(row["kp_id"])
+            pending = int(row["flag_clear_pending"])
+            info = infos.get(int(row["note_id"]))
+            if info is None:
+                conn.execute(
+                    "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
+                    "WHERE kp_id = ?",
+                    (kp_id,),
+                )
+                _notify(progress, "清除旗帜", index, len(rows))
+                continue
+            current = _note_flag(flags, info)
+            if current == 0:
+                conn.execute(
+                    "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
+                    "WHERE kp_id = ?",
+                    (kp_id,),
+                )
+                _notify(progress, "清除旗帜", index, len(rows))
+                continue
+            if current != pending:
+                conn.execute(
+                    "UPDATE anki_sync SET anki_flag = ?, flag_clear_pending = 0 "
+                    "WHERE kp_id = ?",
+                    (current, kp_id),
+                )
+                errors.append(f"卡片 {kp_id}: Anki 旗帜已变为 {current}，未清除")
+                _notify(progress, "清除旗帜", index, len(rows))
+                continue
+            try:
+                for card_id in _note_card_ids(info):
+                    client.call(
+                        "setSpecificValueOfCard",
+                        card=card_id,
+                        keys=["flags"],
+                        newValues=["0"],
+                    )
+            except AnkiError as exc:
+                errors.append(f"卡片 {kp_id}: 清除旗帜失败：{exc}")
+                _notify(progress, "清除旗帜", index, len(rows))
+                continue
+            conn.execute(
+                "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
+                "WHERE kp_id = ?",
+                (kp_id,),
+            )
+            cleared += 1
+            _notify(progress, "清除旗帜", index, len(rows))
+        conn.commit()
+    return cleared, errors
+
+
 def push(
     client: AnkiClient,
     model_name: str,
@@ -1145,6 +1292,10 @@ def push(
                 conn.commit()
             _notify(progress, "检查卡片", index, len(rows))
 
+    flags_cleared, flag_errors = _clear_pending_flags(client, progress)
+    changed += flags_cleared
+    errors.extend(flag_errors)
+
     backup = None
     sync_status = "skipped" if not changed else "disabled"
     if sync_enabled and changed:
@@ -1170,6 +1321,7 @@ def push(
         "pulled": pulled,
         "conflicts": conflicts,
         "skipped_conflicts": skipped,
+        "flags_cleared": flags_cleared,
         "failed": failed,
         "media_uploaded": media_uploaded,
         "backup": backup,
@@ -1194,6 +1346,11 @@ def pull(
         )
     note_ids = {int(row["anki_note_id"] or row["sync_note_id"]) for row in rows}
     infos = _fetch_notes(client, note_ids, progress)
+    flags_by_card = _fetch_flags(
+        client,
+        {card for info in infos.values() for card in _note_card_ids(info)},
+        progress,
+    )
 
     pulled = conflicts = skipped = 0
     errors: list[str] = []
@@ -1203,6 +1360,9 @@ def pull(
             try:
                 result, card_errors = _sync_card(
                     conn, client, model_name, row, infos.get(note_id), "pull", set()
+                )
+                _record_anki_flag(
+                    conn, row["id"], _note_flag(flags_by_card, infos.get(note_id))
                 )
                 conn.commit()
                 pulled += result["pulled"]

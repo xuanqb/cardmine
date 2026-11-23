@@ -1,6 +1,7 @@
 const state = {
   moduleId: null,
   statuses: [],
+  flagged: false,
   sort: "updated_desc",
   q: "",
   page: 1,
@@ -12,6 +13,7 @@ const treeBox = document.getElementById("module-tree");
 const listBox = document.getElementById("card-list");
 const searchInput = document.getElementById("search");
 const statusFilter = document.getElementById("status-filter");
+const flagFilter = document.getElementById("flag-filter");
 const sortSelect = document.getElementById("sort");
 const prevButton = document.getElementById("prev");
 const nextButton = document.getElementById("next");
@@ -51,6 +53,7 @@ function restoreState() {
     ? {
         moduleId: params.has("module_id") ? Number(params.get("module_id")) : null,
         statuses: params.getAll("status").filter((value) => STATUS_VALUES.has(value)),
+        flagged: params.get("flagged") === "1",
         sort: params.get("sort") || state.sort,
         q: params.get("q") || "",
         page: Number(params.get("page") || 1),
@@ -67,6 +70,7 @@ function restoreState() {
       ? [source.status]
       : [];
   state.statuses = [...new Set(statuses.filter((s) => STATUS_VALUES.has(s)))];
+  state.flagged = source.flagged === true;
   if (SORT_VALUES.has(source.sort)) state.sort = source.sort;
   if (typeof source.q === "string") state.q = source.q;
   if (Number.isInteger(source.page) && source.page > 0) state.page = source.page;
@@ -76,6 +80,7 @@ function persistState() {
   const params = new URLSearchParams();
   if (state.moduleId !== null) params.set("module_id", String(state.moduleId));
   for (const status of state.statuses) params.append("status", status);
+  if (state.flagged) params.set("flagged", "1");
   if (state.q) params.set("q", state.q);
   params.set("sort", state.sort);
   params.set("page", String(state.page));
@@ -98,6 +103,8 @@ function syncControls() {
         : state.statuses.includes(value)
     );
   });
+  flagFilter.classList.toggle("active", state.flagged);
+  flagFilter.setAttribute("aria-pressed", String(state.flagged));
   sortSelect.value = state.sort;
 }
 
@@ -231,6 +238,18 @@ function renderCardRow(item) {
 
   const right = document.createElement("div");
   right.className = "card-badges";
+  if (item.flag_clear_pending) {
+    const pendingBadge = document.createElement("span");
+    pendingBadge.className = "badge flag-pending";
+    pendingBadge.textContent = "待清除同步";
+    right.appendChild(pendingBadge);
+  } else if (item.anki_flag) {
+    const flag = window.cm.flagMeta(item.anki_flag);
+    const flagBadge = document.createElement("span");
+    flagBadge.className = `badge ${flag.className}`;
+    flagBadge.textContent = flag.label;
+    right.appendChild(flagBadge);
+  }
   const origin = window.cm.originMeta(item.origin);
   const originBadge = document.createElement("span");
   originBadge.className = `badge ${origin.className}`;
@@ -272,6 +291,7 @@ async function loadCards() {
   });
   if (state.moduleId !== null) params.set("module_id", String(state.moduleId));
   for (const status of state.statuses) params.append("status", status);
+  if (state.flagged) params.set("flagged", "1");
   if (state.q) params.set("q", state.q);
 
   listBox.replaceChildren();
@@ -527,6 +547,13 @@ statusFilter.addEventListener("click", (event) => {
     }
     state.statuses = [...STATUS_VALUES].filter((item) => selected.has(item));
   }
+  syncControls();
+  state.page = 1;
+  loadCards();
+});
+
+flagFilter.addEventListener("click", () => {
+  state.flagged = !state.flagged;
   syncControls();
   state.page = 1;
   loadCards();
