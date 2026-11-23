@@ -6,8 +6,8 @@ window.cm = (() => {
   };
 
   const ORIGIN = {
-    crawl: { label: "RSS 抓取", className: "crawl" },
-    apkg: { label: "apkg 导入", className: "apkg" },
+    crawl: { label: "RSS 抓取", className: "origin-crawl" },
+    apkg: { label: "apkg 导入", className: "origin-apkg" },
   };
 
   async function fetchJSON(url, options = {}) {

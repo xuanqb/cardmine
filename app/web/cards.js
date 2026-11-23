@@ -204,7 +204,6 @@ function renderCardRow(item) {
   meta.className = "card-meta";
   const parts = [
     item.module_path ? item.module_path.replaceAll("/", " / ") : "未分类",
-    window.cm.originMeta(item.origin).label,
     `出现 ${item.mention_count} 次`,
     `更新于 ${window.cm.formatTime(item.updated_at)}`,
   ];
@@ -219,6 +218,11 @@ function renderCardRow(item) {
 
   const right = document.createElement("div");
   right.className = "card-badges";
+  const origin = window.cm.originMeta(item.origin);
+  const originBadge = document.createElement("span");
+  originBadge.className = `badge ${origin.className}`;
+  originBadge.textContent = origin.label;
+  right.appendChild(originBadge);
   if (item.has_ai_answer) {
     const aiBadge = document.createElement("span");
     aiBadge.className = "badge ai";

@@ -1,5 +1,6 @@
 const cardId = Number(window.location.pathname.split("/").pop());
 const statusBadge = document.getElementById("status-badge");
+const originBadge = document.getElementById("origin-badge");
 const statusSelect = document.getElementById("status-select");
 const moduleSelect = document.getElementById("module-select");
 const aliasSection = document.getElementById("alias-section");
@@ -479,9 +480,9 @@ function renderInfo() {
   statusBadge.textContent = meta.label;
   statusSelect.value = card.status;
 
-  document.getElementById("fact-origin").textContent = window.cm.originMeta(
-    card.origin
-  ).label;
+  const origin = window.cm.originMeta(card.origin);
+  originBadge.className = `badge ${origin.className}`;
+  originBadge.textContent = origin.label;
   document.getElementById("fact-mentions").textContent = `${card.mention_count} 次`;
   document.getElementById("fact-last").textContent = window.cm.formatTime(
     card.last_mention_at
