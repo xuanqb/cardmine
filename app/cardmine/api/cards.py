@@ -40,7 +40,7 @@ def _module_ids(conn, module_id: int) -> list[int]:
 @router.get("/cards")
 def list_cards(
     module_id: int | None = None,
-    status: str | None = None,
+    status: list[str] | None = Query(None),
     q: str | None = None,
     sort: str = "updated_desc",
     page: int = Query(1, ge=1),
@@ -48,7 +48,7 @@ def list_cards(
 ) -> dict:
     if sort not in SORTS:
         raise HTTPException(status_code=400, detail="不支持的排序方式")
-    if status is not None and status not in STATUSES:
+    if status is not None and any(item not in STATUSES for item in status):
         raise HTTPException(status_code=400, detail="不支持的状态")
 
     where: list[str] = []
@@ -63,9 +63,10 @@ def list_cards(
             where.append(f"kp.module_id IN ({placeholders})")
             params.extend(ids)
 
-        if status is not None:
-            where.append("kp.status = ?")
-            params.append(status)
+        if status:
+            placeholders = ",".join("?" for _ in status)
+            where.append(f"kp.status IN ({placeholders})")
+            params.extend(status)
 
         if q and q.strip():
             pattern = f"%{_like_escape(q.strip())}%"

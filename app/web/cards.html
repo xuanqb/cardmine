@@ -38,12 +38,12 @@
     <section class="panel list-panel">
       <div class="list-toolbar">
         <input type="search" id="search" placeholder="搜索正面或背面…" autocomplete="off">
-        <select id="status-filter">
-          <option value="">全部状态</option>
-          <option value="draft">草稿</option>
-          <option value="ready">已整理</option>
-          <option value="archived">已归档</option>
-        </select>
+        <div class="status-filter" id="status-filter" role="group" aria-label="按状态筛选">
+          <button type="button" class="chip active" data-status="">全部</button>
+          <button type="button" class="chip" data-status="draft">草稿</button>
+          <button type="button" class="chip" data-status="ready">已整理</button>
+          <button type="button" class="chip" data-status="archived">已归档</button>
+        </div>
         <select id="sort">
           <option value="updated_desc">按更新时间</option>
           <option value="mentions_desc">按出现次数</option>
@@ -66,7 +66,7 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="merge-title">
       <h2 id="merge-title">合并所选卡片</h2>
       <p class="modal-hint">
-        选择一张作为保留卡，其余卡片的背面与问法会并入，随后被删除。合并后保留卡回到草稿状态。
+        选择一张作为保留卡，其余卡片的背面与问法会并入，随后被删除。保留卡保持原有状态。
       </p>
       <div class="merge-choice-list" id="merge-card-list"></div>
       <div class="merge-options" id="merge-options"></div>

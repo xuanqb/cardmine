@@ -1,6 +1,6 @@
 const state = {
   moduleId: null,
-  status: "",
+  statuses: [],
   sort: "updated_desc",
   q: "",
   page: 1,
@@ -33,7 +33,7 @@ let deleteUnclaimedNotes = false;
 
 const FILTER_KEY = "cardmine.cards.filters";
 const SORT_VALUES = new Set(["updated_desc", "mentions_desc", "recent_desc"]);
-const STATUS_VALUES = new Set(["", "draft", "ready", "archived"]);
+const STATUS_VALUES = new Set(["draft", "ready", "archived"]);
 
 function restoreState() {
   const params = new URLSearchParams(window.location.search);
@@ -50,7 +50,7 @@ function restoreState() {
   const source = hasQuery
     ? {
         moduleId: params.has("module_id") ? Number(params.get("module_id")) : null,
-        status: params.get("status") || "",
+        statuses: params.getAll("status").filter((value) => STATUS_VALUES.has(value)),
         sort: params.get("sort") || state.sort,
         q: params.get("q") || "",
         page: Number(params.get("page") || 1),
@@ -61,7 +61,12 @@ function restoreState() {
   if (Number.isInteger(source.moduleId) && source.moduleId > 0) {
     state.moduleId = source.moduleId;
   }
-  if (STATUS_VALUES.has(source.status)) state.status = source.status;
+  const statuses = Array.isArray(source.statuses)
+    ? source.statuses
+    : typeof source.status === "string" && source.status
+      ? [source.status]
+      : [];
+  state.statuses = [...new Set(statuses.filter((s) => STATUS_VALUES.has(s)))];
   if (SORT_VALUES.has(source.sort)) state.sort = source.sort;
   if (typeof source.q === "string") state.q = source.q;
   if (Number.isInteger(source.page) && source.page > 0) state.page = source.page;
@@ -70,7 +75,7 @@ function restoreState() {
 function persistState() {
   const params = new URLSearchParams();
   if (state.moduleId !== null) params.set("module_id", String(state.moduleId));
-  if (state.status) params.set("status", state.status);
+  for (const status of state.statuses) params.append("status", status);
   if (state.q) params.set("q", state.q);
   params.set("sort", state.sort);
   params.set("page", String(state.page));
@@ -84,7 +89,15 @@ function persistState() {
 
 function syncControls() {
   searchInput.value = state.q;
-  statusFilter.value = state.status;
+  document.querySelectorAll("#status-filter .chip").forEach((chip) => {
+    const value = chip.dataset.status;
+    chip.classList.toggle(
+      "active",
+      value === ""
+        ? state.statuses.length === 0
+        : state.statuses.includes(value)
+    );
+  });
   sortSelect.value = state.sort;
 }
 
@@ -258,7 +271,7 @@ async function loadCards() {
     sort: state.sort,
   });
   if (state.moduleId !== null) params.set("module_id", String(state.moduleId));
-  if (state.status) params.set("status", state.status);
+  for (const status of state.statuses) params.append("status", status);
   if (state.q) params.set("q", state.q);
 
   listBox.replaceChildren();
@@ -499,8 +512,22 @@ searchInput.addEventListener("input", () => {
   reloadAfterSearch();
 });
 
-statusFilter.addEventListener("change", () => {
-  state.status = statusFilter.value;
+statusFilter.addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (!chip) return;
+  const value = chip.dataset.status;
+  if (!value) {
+    state.statuses = [];
+  } else {
+    const selected = new Set(state.statuses);
+    if (selected.has(value)) {
+      selected.delete(value);
+    } else {
+      selected.add(value);
+    }
+    state.statuses = [...STATUS_VALUES].filter((item) => selected.has(item));
+  }
+  syncControls();
   state.page = 1;
   loadCards();
 });
