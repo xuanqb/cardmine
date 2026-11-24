@@ -59,11 +59,13 @@
       <section class="panel">
         <h2>全库语义扫描</h2>
         <p class="hint">
-          对全部卡片两两向量比对，再用 AI 复核相似问法。确认重复的对会进入左侧队列，
-          可逐条或批量合并。扫描会消耗 AI 调用额度。
+          对全部卡片做向量比对。「开始扫描」会用 AI 复核相似问法；「快速扫描」只按向量相似度
+          （≥ 高阈值）生成候选，不调用 AI 复核，可能有误报。两种方式都需要 Embedding 配置，
+          候选会进入左侧队列，可逐条或批量合并。
         </p>
         <div class="sync-actions">
           <button type="button" id="scan-run">开始扫描</button>
+          <button type="button" class="ghost" id="scan-fast">快速扫描（跳过 AI）</button>
         </div>
         <div class="progress-wrap" id="scan-progress" hidden>
           <div class="progress-head">

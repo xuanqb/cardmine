@@ -29,6 +29,10 @@ class BatchIn(BaseModel):
     keep_side: str = "left"
 
 
+class ScanIn(BaseModel):
+    mode: str = "verify"
+
+
 @router.get("/dup-candidates")
 def list_candidates(
     status: str = "pending",
@@ -64,20 +68,23 @@ def _set(job_id: str, **fields: Any) -> None:
             job.update(fields)
 
 
-def _run_scan(job_id: str, settings: dict) -> None:
+def _run_scan(job_id: str, settings: dict, mode: str) -> None:
     def progress(phase: str, done: int, total: int) -> None:
         _set(job_id, phase=phase, processed=done, total=total)
 
     _set(job_id, status="running", started_at=utc_now())
     try:
-        report = review.scan(settings, progress)
+        report = review.scan(settings, progress, mode)
         _set(job_id, status="done", report=report, finished_at=utc_now())
     except Exception as exc:  # noqa: BLE001
         _set(job_id, status="failed", error=str(exc), finished_at=utc_now())
 
 
 @router.post("/dedupe/scan")
-def start_scan() -> dict:
+def start_scan(payload: ScanIn | None = None) -> dict:
+    mode = (payload or ScanIn()).mode
+    if mode not in {"verify", "vector"}:
+        raise HTTPException(status_code=400, detail="不支持的扫描模式")
     with _lock:
         if any(job["status"] in _ACTIVE for job in _jobs.values()) or review.is_scanning():
             raise HTTPException(status_code=409, detail="已有全库扫描任务在运行，请稍候")
@@ -91,6 +98,7 @@ def start_scan() -> dict:
         _jobs[job_id] = {
             "job_id": job_id,
             "status": "queued",
+            "mode": mode,
             "phase": "排队中",
             "processed": 0,
             "total": 0,
@@ -102,8 +110,10 @@ def start_scan() -> dict:
         }
 
     settings = load_settings()
-    threading.Thread(target=_run_scan, args=(job_id, settings), daemon=True).start()
-    return {"job_id": job_id}
+    threading.Thread(
+        target=_run_scan, args=(job_id, settings, mode), daemon=True
+    ).start()
+    return {"job_id": job_id, "mode": mode}
 
 
 @router.get("/dedupe/jobs/{job_id}")

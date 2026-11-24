@@ -3,6 +3,7 @@ const { fetchJSON, debounce, formatTime, statusMeta } = window.cm;
 const listEl = document.getElementById("candidate-list");
 const toast = document.getElementById("toast");
 const scanButton = document.getElementById("scan-run");
+const scanFastButton = document.getElementById("scan-fast");
 const scanProgress = document.getElementById("scan-progress");
 const scanSummary = document.getElementById("scan-summary");
 const actionList = document.getElementById("action-list");
@@ -349,14 +350,24 @@ function renderScanProgress(job) {
 
 function renderScanSummary(report) {
   scanSummary.hidden = false;
-  const parts = [
-    `扫描 ${report.knowledge_points || 0} 张卡`,
-    `${report.pairs || 0} 对候选`,
-    `超阈值 ${report.above_threshold || 0} 对`,
-    `AI 复核 ${report.reviewed || 0} 对`,
-    `新增候选 ${report.candidates || 0} 条`,
-    `${((report.elapsed_ms || 0) / 1000).toFixed(1)} 秒`,
-  ];
+  const parts =
+    report.mode === "vector"
+      ? [
+          `扫描 ${report.knowledge_points || 0} 张卡`,
+          `${report.above_threshold || 0} 对 ≥ ${(report.threshold || 0).toFixed(2)}`,
+          `新增候选 ${report.candidates || 0} 条`,
+        ]
+      : [
+          `扫描 ${report.knowledge_points || 0} 张卡`,
+          `${report.pairs || 0} 对候选`,
+          `超阈值 ${report.above_threshold || 0} 对`,
+          `AI 复核 ${report.reviewed || 0} 对`,
+          `新增候选 ${report.candidates || 0} 条`,
+        ];
+  if (report.mode === "vector" && report.truncated) {
+    parts.push(`已截断 ${report.truncated} 对`);
+  }
+  parts.push(`${((report.elapsed_ms || 0) / 1000).toFixed(1)} 秒`);
   scanSummary.textContent = parts.join(" · ");
   if (report.errors && report.errors.length) {
     const detail = document.createElement("span");
@@ -388,19 +399,24 @@ function pollScan(jobId) {
   });
 }
 
-async function runScan() {
+async function runScan(mode = "verify") {
   if (scanning) return;
   scanning = true;
   scanButton.disabled = true;
+  scanFastButton.disabled = true;
   scanSummary.hidden = true;
   renderScanProgress({ phase: "排队中", processed: 0, total: 0 });
 
   try {
-    const { job_id } = await fetchJSON("/api/dedupe/scan", { method: "POST" });
+    const { job_id } = await fetchJSON("/api/dedupe/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
     const job = await pollScan(job_id);
     scanProgress.hidden = true;
     renderScanSummary(job.report || {});
-    showToast("全库扫描完成");
+    showToast(mode === "vector" ? "快速扫描完成" : "全库扫描完成");
     state.page = 1;
     await Promise.all([loadCandidates(), loadActions()]);
   } catch (error) {
@@ -409,6 +425,7 @@ async function runScan() {
   } finally {
     scanning = false;
     scanButton.disabled = false;
+    scanFastButton.disabled = false;
   }
 }
 
@@ -554,7 +571,8 @@ actionNext.addEventListener("click", () => {
   }
 });
 
-scanButton.addEventListener("click", runScan);
+scanButton.addEventListener("click", () => runScan("verify"));
+scanFastButton.addEventListener("click", () => runScan("vector"));
 
 loadCandidates();
 loadActions();

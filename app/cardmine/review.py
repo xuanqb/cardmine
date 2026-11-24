@@ -623,17 +623,22 @@ def undo_action(action_id: int) -> dict:
     return {"action_id": action_id, "undone": True}
 
 
-def scan(settings: dict, progress: Progress | None = None) -> dict:
+def scan(
+    settings: dict, progress: Progress | None = None, mode: str = "verify"
+) -> dict:
     if not _scan_lock.acquire(blocking=False):
         raise ReviewError("已有全库扫描任务在运行", 409)
     try:
-        return _scan(settings, progress)
+        return _scan(settings, progress, mode)
     finally:
         _scan_lock.release()
 
 
-def _scan(settings: dict, progress: Progress | None = None) -> dict:
+def _scan(
+    settings: dict, progress: Progress | None = None, mode: str = "verify"
+) -> dict:
     started = time.time()
+    vector_only = mode == "vector"
     client = AIClient(
         settings.get("ai_base_url", ""),
         settings.get("ai_api_key", ""),
@@ -644,10 +649,9 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
     )
     if not client.embeddings_configured:
         raise ReviewError("未配置 Embedding 模型，无法执行全库扫描")
-    low = min(
-        float(settings["dup_high_threshold"]),
-        float(settings["dup_low_threshold"]),
-    )
+    high = float(settings["dup_high_threshold"])
+    low = min(high, float(settings["dup_low_threshold"]))
+    threshold = high if vector_only else low
 
     errors: list[str] = []
     reviewed = 0
@@ -701,7 +705,7 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
                 if key in seen:
                     continue
                 seen.add(key)
-                if key in excluded or score < low:
+                if key in excluded or score < threshold:
                     continue
                 scored.append((score, key[0], key[1]))
             if index % 20 == 0:
@@ -723,7 +727,7 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
                 errors.append(f"别名检索失败: {exc}")
                 break
             for active_id, score in alias_hits:
-                if active_id == owner or active_id not in fronts or score < low:
+                if active_id == owner or active_id not in fronts or score < threshold:
                     continue
                 if _pair_key(owner, active_id) in excluded:
                     continue
@@ -752,83 +756,139 @@ def _scan(settings: dict, progress: Progress | None = None) -> dict:
             )
         }
         created_pairs = set(existing)
-        shortlist = [
+        card_eligible = [
             item
             for item in scored
             if frozenset((item[1], item[2])) not in existing
             and _pair_key(item[1], item[2]) not in excluded
-        ][:SCAN_VERIFY_LIMIT]
-        alias_shortlist = [
+        ]
+        alias_eligible = [
             item
             for item in alias_scored
             if frozenset((item[1], item[2])) not in existing
             and _pair_key(item[1], item[2]) not in excluded
-        ][:SCAN_VERIFY_LIMIT]
+        ]
+        shortlist = card_eligible[:SCAN_VERIFY_LIMIT]
+        alias_shortlist = alias_eligible[:SCAN_VERIFY_LIMIT]
+        truncated = (len(card_eligible) - len(shortlist)) + (
+            len(alias_eligible) - len(alias_shortlist)
+        )
 
-        for index, (score, left_id, right_id) in enumerate(shortlist, start=1):
-            _notify(progress, "LLM 复核", index - 1, len(shortlist))
-            try:
-                same, reason = _verify_same(
-                    client, fronts[left_id], fronts[right_id]
+        if vector_only:
+            total_to_write = len(shortlist) + len(alias_shortlist)
+            for index, (score, left_id, right_id) in enumerate(shortlist, start=1):
+                conn.execute(
+                    "INSERT INTO dup_candidate"
+                    "(left_kp_id, right_kp_id, mention_id, score, reason, created_at) "
+                    "VALUES(?, ?, NULL, ?, ?, ?)",
+                    (
+                        left_id,
+                        right_id,
+                        score,
+                        f"相似度 {score:.2f}（未 AI 复核）",
+                        utc_now(),
+                    ),
                 )
-            except AIError as exc:
-                errors.append(f"{left_id}-{right_id}: {exc}")
-                continue
-            reviewed += 1
-            if not same:
-                continue
-            conn.execute(
-                "INSERT INTO dup_candidate"
-                "(left_kp_id, right_kp_id, mention_id, score, reason, created_at) "
-                "VALUES(?, ?, NULL, ?, ?, ?)",
-                (
-                    left_id,
-                    right_id,
-                    score,
-                    reason or f"相似度 {score:.2f}",
-                    utc_now(),
-                ),
-            )
-            conn.commit()
-            inserted += 1
-            created_pairs.add(frozenset((left_id, right_id)))
-        _notify(progress, "LLM 复核", len(shortlist), len(shortlist))
+                conn.commit()
+                inserted += 1
+                created_pairs.add(frozenset((left_id, right_id)))
+                if index % 10 == 0:
+                    _notify(progress, "写入候选", index, total_to_write)
+            for index, (score, owner_id, active_id, alias_front) in enumerate(
+                alias_shortlist, start=1
+            ):
+                pair = frozenset((owner_id, active_id))
+                if pair in created_pairs:
+                    continue
+                reason_text = (
+                    f"相似度 {score:.2f}（未 AI 复核；与已合并来源"
+                    f"「{alias_front[:60]}」相似）"
+                )
+                conn.execute(
+                    "INSERT INTO dup_candidate"
+                    "(left_kp_id, right_kp_id, mention_id, score, reason, created_at) "
+                    "VALUES(?, ?, NULL, ?, ?, ?)",
+                    (owner_id, active_id, score, reason_text, utc_now()),
+                )
+                conn.commit()
+                created_pairs.add(pair)
+                alias_inserted += 1
+                if index % 10 == 0:
+                    _notify(
+                        progress,
+                        "写入候选",
+                        len(shortlist) + index,
+                        total_to_write,
+                    )
+            _notify(progress, "写入候选", total_to_write, total_to_write)
+        else:
+            for index, (score, left_id, right_id) in enumerate(shortlist, start=1):
+                _notify(progress, "LLM 复核", index - 1, len(shortlist))
+                try:
+                    same, reason = _verify_same(
+                        client, fronts[left_id], fronts[right_id]
+                    )
+                except AIError as exc:
+                    errors.append(f"{left_id}-{right_id}: {exc}")
+                    continue
+                reviewed += 1
+                if not same:
+                    continue
+                conn.execute(
+                    "INSERT INTO dup_candidate"
+                    "(left_kp_id, right_kp_id, mention_id, score, reason, created_at) "
+                    "VALUES(?, ?, NULL, ?, ?, ?)",
+                    (
+                        left_id,
+                        right_id,
+                        score,
+                        reason or f"相似度 {score:.2f}",
+                        utc_now(),
+                    ),
+                )
+                conn.commit()
+                inserted += 1
+                created_pairs.add(frozenset((left_id, right_id)))
+            _notify(progress, "LLM 复核", len(shortlist), len(shortlist))
 
-        for index, (score, owner_id, active_id, alias_front) in enumerate(
-            alias_shortlist, start=1
-        ):
-            pair = frozenset((owner_id, active_id))
-            if pair in created_pairs:
-                continue
-            _notify(progress, "别名复核", index - 1, len(alias_shortlist))
-            try:
-                same, reason = _verify_same(
-                    client, fronts[active_id], alias_front
+            for index, (score, owner_id, active_id, alias_front) in enumerate(
+                alias_shortlist, start=1
+            ):
+                pair = frozenset((owner_id, active_id))
+                if pair in created_pairs:
+                    continue
+                _notify(progress, "别名复核", index - 1, len(alias_shortlist))
+                try:
+                    same, reason = _verify_same(
+                        client, fronts[active_id], alias_front
+                    )
+                except AIError as exc:
+                    errors.append(f"alias {owner_id}-{active_id}: {exc}")
+                    continue
+                alias_reviewed += 1
+                if not same:
+                    continue
+                if pair in created_pairs:
+                    continue
+                reason_text = (
+                    f"{reason or f'相似度 {score:.2f}'}（与已合并来源"
+                    f"「{alias_front[:60]}」相似）"
                 )
-            except AIError as exc:
-                errors.append(f"alias {owner_id}-{active_id}: {exc}")
-                continue
-            alias_reviewed += 1
-            if not same:
-                continue
-            if pair in created_pairs:
-                continue
-            reason_text = (
-                f"{reason or f'相似度 {score:.2f}'}（与已合并来源"
-                f"「{alias_front[:60]}」相似）"
-            )
-            conn.execute(
-                "INSERT INTO dup_candidate"
-                "(left_kp_id, right_kp_id, mention_id, score, reason, created_at) "
-                "VALUES(?, ?, NULL, ?, ?, ?)",
-                (owner_id, active_id, score, reason_text, utc_now()),
-            )
-            conn.commit()
-            created_pairs.add(pair)
-            alias_inserted += 1
-        _notify(progress, "别名复核", len(alias_shortlist), len(alias_shortlist))
+                conn.execute(
+                    "INSERT INTO dup_candidate"
+                    "(left_kp_id, right_kp_id, mention_id, score, reason, created_at) "
+                    "VALUES(?, ?, NULL, ?, ?, ?)",
+                    (owner_id, active_id, score, reason_text, utc_now()),
+                )
+                conn.commit()
+                created_pairs.add(pair)
+                alias_inserted += 1
+            _notify(progress, "别名复核", len(alias_shortlist), len(alias_shortlist))
 
     return {
+        "mode": mode,
+        "threshold": round(threshold, 4),
+        "truncated": truncated,
         "knowledge_points": total_rows,
         "pairs": pairs,
         "above_threshold": above,
