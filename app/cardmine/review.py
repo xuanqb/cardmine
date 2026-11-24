@@ -651,7 +651,11 @@ def _scan(
         raise ReviewError("未配置 Embedding 模型，无法执行全库扫描")
     high = float(settings["dup_high_threshold"])
     low = min(high, float(settings["dup_low_threshold"]))
-    threshold = high if vector_only else low
+    threshold = (
+        float(settings.get("dup_vector_threshold", high))
+        if vector_only
+        else low
+    )
 
     errors: list[str] = []
     reviewed = 0
