@@ -337,6 +337,43 @@ def archive_cards(payload: CardArchive) -> dict:
     }
 
 
+class CardReady(BaseModel):
+    ids: list[int] = Field(min_length=1)
+
+
+@router.post("/cards/ready")
+def mark_cards_ready(payload: CardReady) -> dict:
+    ids = list(dict.fromkeys(payload.ids))
+    placeholders = ",".join("?" for _ in ids)
+
+    with closing(connect()) as conn, conn:
+        rows = conn.execute(
+            f"SELECT id, status FROM knowledge_point WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        found = {row["id"]: row["status"] for row in rows}
+
+        updated = [card_id for card_id in ids if found.get(card_id) == "draft"]
+        skipped = [
+            card_id for card_id in ids if card_id in found and found[card_id] != "draft"
+        ]
+        missing = [card_id for card_id in ids if card_id not in found]
+
+        if updated:
+            update_placeholders = ",".join("?" for _ in updated)
+            conn.execute(
+                f"UPDATE knowledge_point SET status = 'ready', updated_at = ? "
+                f"WHERE id IN ({update_placeholders}) AND status = 'draft'",
+                [utc_now(), *updated],
+            )
+
+    return {
+        "updated_ids": updated,
+        "skipped_ids": skipped,
+        "failed": [{"id": card_id, "reason": "卡片不存在"} for card_id in missing],
+    }
+
+
 class CardUpdate(BaseModel):
     front_md: str | None = None
     back_md: str | None = None

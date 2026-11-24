@@ -21,6 +21,7 @@ const pageInfo = document.getElementById("page-info");
 const treeAll = document.getElementById("tree-all");
 const mergeButton = document.getElementById("merge-button");
 const archiveButton = document.getElementById("archive-button");
+const readyButton = document.getElementById("ready-button");
 const selectionInfo = document.getElementById("selection-info");
 const selectionCount = document.getElementById("selection-count");
 const clearSelectionButton = document.getElementById("clear-selection");
@@ -34,6 +35,7 @@ const mergeConfirm = document.getElementById("merge-confirm");
 
 const selectedIds = new Set();
 let archiveBusy = false;
+let readyBusy = false;
 let toastTimer = null;
 let mergeDetails = [];
 let mergeSurvivorId = null;
@@ -317,6 +319,12 @@ function updateSelectionUI() {
     : count
       ? `归档所选（${count}）`
       : "归档所选";
+  readyButton.disabled = count === 0 || readyBusy;
+  readyButton.textContent = readyBusy
+    ? "整理中…"
+    : count
+      ? `标记已整理（${count}）`
+      : "标记已整理";
   selectionInfo.hidden = count === 0;
   selectionCount.textContent = String(count);
   clearSelectionButton.hidden = count === 0;
@@ -380,6 +388,40 @@ async function archiveSelected() {
     showToast(error.message || "归档失败", true);
   } finally {
     archiveBusy = false;
+    updateSelectionUI();
+  }
+}
+
+async function markSelectedReady() {
+  const ids = [...selectedIds];
+  if (!ids.length || readyBusy) return;
+
+  readyBusy = true;
+  updateSelectionUI();
+  try {
+    const result = await window.cm.fetchJSON("/api/cards/ready", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+
+    removeFromSelection([
+      ...result.updated_ids,
+      ...result.skipped_ids,
+      ...result.failed.map((item) => item.id),
+    ]);
+
+    const parts = [`已整理 ${result.updated_ids.length} 张`];
+    if (result.skipped_ids.length) {
+      parts.push(`跳过 ${result.skipped_ids.length} 张（非草稿）`);
+    }
+    if (result.failed.length) parts.push(`${result.failed.length} 张不存在`);
+    showToast(parts.join("，"));
+    await loadCards();
+  } catch (error) {
+    showToast(error.message || "标记失败", true);
+  } finally {
+    readyBusy = false;
     updateSelectionUI();
   }
 }
@@ -698,6 +740,7 @@ nextButton.addEventListener("click", () => {
 
 mergeButton.addEventListener("click", openMergeModal);
 archiveButton.addEventListener("click", archiveSelected);
+readyButton.addEventListener("click", markSelectedReady);
 clearSelectionButton.addEventListener("click", () => {
   selectedIds.clear();
   persistSelection();
