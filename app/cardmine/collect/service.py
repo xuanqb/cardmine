@@ -51,28 +51,6 @@ def _notify(progress: Progress | None, phase: str, done: int, total: int) -> Non
         progress(phase, done, total)
 
 
-def ensure_default_feed(settings: dict) -> None:
-    url = (settings.get("rss_url") or "").strip()
-    if not url:
-        return
-    interval = int(settings.get("fetch_interval_minutes") or 60)
-    with closing(connect()) as conn, conn:
-        rows = conn.execute("SELECT id, url FROM feed ORDER BY id").fetchall()
-        if len(rows) == 1 and rows[0]["url"] != url:
-            conn.execute(
-                "UPDATE feed SET url = ?, interval_minutes = ? WHERE id = ?",
-                (url, interval, rows[0]["id"]),
-            )
-            return
-        group = groups.main_group(conn)
-        conn.execute(
-            "INSERT INTO feed(url, name, enabled, interval_minutes, group_id) "
-            "VALUES(?, ?, 1, ?, ?) "
-            "ON CONFLICT(url) DO UPDATE SET interval_minutes = excluded.interval_minutes",
-            (url, "牛客面经", interval, group["id"] if group is not None else None),
-        )
-
-
 def _start_log(conn, feed_id: int) -> int:
     cursor = conn.execute(
         "INSERT INTO fetch_log(feed_id, started_at) VALUES(?, ?)",
@@ -245,7 +223,6 @@ def _run_fetch(settings: dict, progress: Progress | None = None) -> dict:
         settings.get("ai_embedding_base_url", ""),
         settings.get("ai_embedding_api_key", ""),
     )
-    ensure_default_feed(settings)
 
     with closing(connect()) as conn:
         feeds = conn.execute(

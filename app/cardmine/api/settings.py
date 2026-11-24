@@ -5,14 +5,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..collect import ensure_default_feed
 from ..db import connect
 
 router = APIRouter(prefix="/api", tags=["settings"])
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "rss_url": "",
-    "fetch_interval_minutes": 60,
     "ai_base_url": "",
     "ai_api_key": "",
     "ai_chat_model": "",
@@ -39,8 +36,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 class SettingsIn(BaseModel):
-    rss_url: str | None = None
-    fetch_interval_minutes: int | None = Field(None, ge=5)
     ai_base_url: str | None = None
     ai_api_key: str | None = None
     ai_chat_model: str | None = None
@@ -114,5 +109,4 @@ def update_settings(payload: SettingsIn) -> dict[str, Any]:
                 ],
             )
 
-    ensure_default_feed(merged)
     return load_settings()
