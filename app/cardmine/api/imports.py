@@ -2,11 +2,12 @@ import threading
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from .. import config
 from ..db import utc_now
 from ..importer import run_import
+from ..importer.markdown import run_markdown_import
 
 router = APIRouter(prefix="/api/import", tags=["import"])
 
@@ -83,6 +84,40 @@ async def upload_apkg(file: UploadFile = File(...)) -> dict:
 
     threading.Thread(target=_run_job, args=(job_id, dest), daemon=True).start()
     return {"job_id": job_id}
+
+
+@router.post("/markdown")
+async def upload_markdown(
+    file: UploadFile = File(...),
+    module: str = Form("前端"),
+    dry_run: bool = Form(False),
+    overwrite: bool = Form(False),
+) -> dict:
+    filename = Path(file.filename or "questions.md").name
+    if Path(filename).suffix.lower() not in (".md", ".markdown", ".zip"):
+        raise HTTPException(status_code=400, detail="仅支持 .md / .markdown / .zip 文件")
+
+    chunks = []
+    size = 0
+    while chunk := await file.read(1024 * 1024):
+        size += len(chunk)
+        if size > config.MAX_MARKDOWN_IMPORT_BYTES:
+            raise HTTPException(
+                status_code=413, detail="Markdown 题库文件超过 50MB，已拒绝导入"
+            )
+        chunks.append(chunk)
+
+    try:
+        report = run_markdown_import(
+            filename,
+            b"".join(chunks),
+            module_path=module,
+            dry_run=dry_run,
+            overwrite=overwrite,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return report.to_dict()
 
 
 @router.get("/{job_id}")

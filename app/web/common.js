@@ -8,6 +8,7 @@ window.cm = (() => {
   const ORIGIN = {
     crawl: { label: "RSS 抓取", className: "origin-crawl" },
     apkg: { label: "apkg 导入", className: "origin-apkg" },
+    manual: { label: "手动导入", className: "origin-manual" },
   };
 
   const FLAGS = {

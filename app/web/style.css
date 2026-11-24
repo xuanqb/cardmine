@@ -463,6 +463,17 @@ button:disabled {
   color: var(--text-muted);
 }
 
+.import-form input[type="text"] {
+  width: 160px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+
 .import-form input[type="file"]::file-selector-button {
   margin-right: 10px;
   padding: 8px 14px;
@@ -472,6 +483,39 @@ button:disabled {
   color: var(--text);
   font: inherit;
   cursor: pointer;
+}
+
+.import-form label.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.md-sample {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.md-sample-title {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.md-sample pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .progress-wrap {
@@ -1001,6 +1045,12 @@ button.danger:disabled {
   color: #8250df;
   border-color: rgba(130, 80, 223, 0.35);
   background: rgba(130, 80, 223, 0.08);
+}
+
+.badge.origin-manual {
+  color: #bc4c00;
+  border-color: rgba(188, 76, 0, 0.35);
+  background: rgba(188, 76, 0, 0.08);
 }
 
 .badge.flag-red {
@@ -1986,6 +2036,12 @@ body.drawer-instant .editor-layout {
     color: #d2a8ff;
     border-color: rgba(210, 168, 255, 0.4);
     background: rgba(210, 168, 255, 0.12);
+  }
+
+  .badge.origin-manual {
+    color: #ffa657;
+    border-color: rgba(255, 166, 87, 0.4);
+    background: rgba(255, 166, 87, 0.12);
   }
 
   .badge.flag-red {
