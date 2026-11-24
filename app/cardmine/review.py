@@ -399,6 +399,8 @@ def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
             if row is None:
                 raise ReviewError(f"卡片 {cid} 不存在", 404)
             rows[cid] = row
+        if len({row["group_id"] for row in rows.values()}) > 1:
+            raise ReviewError("不能跨组合并卡片")
         survivor = rows[survivor_id]
         source_rows = [rows[cid] for cid in sources]
 
@@ -681,7 +683,7 @@ def _scan(
 
         vectors = merger.store.load_all()
         rows = conn.execute(
-            "SELECT id, front_md, module_id FROM knowledge_point ORDER BY id"
+            "SELECT id, front_md, module_id, group_id FROM knowledge_point ORDER BY id"
         ).fetchall()
         items = [
             (row["id"], vectors[row["id"]])
@@ -689,6 +691,7 @@ def _scan(
             if row["id"] in vectors
         ]
         fronts = {row["id"]: row["front_md"] for row in rows}
+        group_of = {row["id"]: row["group_id"] for row in rows}
         alias_rows = aliases.load_all(conn, merger.dim)
         excluded = _active_exclusion_pairs(conn)
 
@@ -704,6 +707,8 @@ def _scan(
                 break
             for right_id, score in hits:
                 if right_id == left_id or right_id not in fronts:
+                    continue
+                if group_of.get(right_id) != group_of.get(left_id):
                     continue
                 key = _pair_key(left_id, right_id)
                 if key in seen:
@@ -732,6 +737,8 @@ def _scan(
                 break
             for active_id, score in alias_hits:
                 if active_id == owner or active_id not in fronts or score < threshold:
+                    continue
+                if alias_row["group_id"] != group_of.get(active_id):
                     continue
                 if _pair_key(owner, active_id) in excluded:
                     continue

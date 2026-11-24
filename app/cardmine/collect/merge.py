@@ -5,7 +5,7 @@ import re
 import sqlite3
 import struct
 
-from .. import aliases
+from .. import aliases, groups
 from ..ai import AIClient, AIError
 from ..db import utc_now
 from ..importer.textfmt import normalize_front
@@ -158,66 +158,35 @@ def backfill_embeddings(
     return total
 
 
-def module_scope(conn, module_id: int | None) -> set[int] | None:
-    """同模块及相邻模块（父、子、兄弟）的 id 集合。"""
-    if module_id is None:
-        return None
-    rows = conn.execute("SELECT id, parent_id FROM module").fetchall()
-    by_id = {row["id"]: row["parent_id"] for row in rows}
-    if module_id not in by_id:
-        return None
-    parent_id = by_id[module_id]
-    children: dict[int | None, list[int]] = {}
-    for row in rows:
-        children.setdefault(row["parent_id"], []).append(row["id"])
-
-    allowed = {module_id}
-    stack = [module_id]
-    while stack:
-        for child in children.get(stack.pop(), []):
-            allowed.add(child)
-            stack.append(child)
-    if parent_id is not None:
-        allowed.add(parent_id)
-        allowed.update(children.get(parent_id, []))
-    return allowed
-
-
-def _preferred_ai_root(conn) -> sqlite3.Row | None:
-    """选择卡片量最大的非 AI 顶层模块，作为 AI 新建路径的挂载点。"""
+def _known_root(conn, value: str) -> sqlite3.Row | None:
     return conn.execute(
-        """
-        WITH RECURSIVE sub(root_id, id) AS (
-            SELECT id, id FROM module WHERE parent_id IS NULL
-            UNION ALL
-            SELECT sub.root_id, m.id
-            FROM module m JOIN sub ON m.parent_id = sub.id
-        )
-        SELECT m.id, m.name, m.path, COUNT(kp.id) AS cards
-        FROM module m
-        LEFT JOIN sub ON sub.root_id = m.id
-        LEFT JOIN knowledge_point kp ON kp.module_id = sub.id
-        WHERE m.parent_id IS NULL AND m.created_by != 'ai'
-        GROUP BY m.id
-        ORDER BY cards DESC, (m.name = 'Hollis八股文') DESC, m.id
-        LIMIT 1
-        """
+        "SELECT id, name, path, created_by FROM module "
+        "WHERE parent_id IS NULL AND (name = ? OR path = ?) LIMIT 1",
+        (value, value),
     ).fetchone()
 
 
-def ensure_module(conn, path: str, created_by: str = "ai") -> int | None:
+def ensure_module(
+    conn, path: str, created_by: str = "ai", group: sqlite3.Row | None = None
+) -> int | None:
     parts = [part.strip() for part in path.strip("/").split("/") if part.strip()][:3]
     if not parts:
         return None
 
-    if created_by == "ai":
-        root = conn.execute(
-            "SELECT id, name, created_by FROM module WHERE parent_id IS NULL AND name = ?",
-            (parts[0],),
-        ).fetchone()
-        needs_root = root is None or root["created_by"] == "ai" or root["name"] == "Default"
+    if group is not None:
+        root_path = group["path"]
+        if parts[0] in (group["name"], root_path) or _known_root(conn, parts[0]):
+            parts = parts[1:]
+        parts = ([root_path] + parts)[:3]
+    elif created_by == "ai":
+        root = _known_root(conn, parts[0])
+        needs_root = (
+            root is None
+            or root["created_by"] == "ai"
+            or root["name"] == "Default"
+        )
         if needs_root:
-            preferred = _preferred_ai_root(conn)
+            preferred = groups.main_group(conn)
             if preferred and preferred["name"] != "Default" and (
                 root is None or preferred["id"] != root["id"]
             ):
@@ -283,32 +252,38 @@ class Merger:
         return total
 
     def resolve(
-        self, front: str, module_id: int | None, mention_id: int, subtype: str | None
+        self,
+        front: str,
+        module_id: int | None,
+        mention_id: int,
+        subtype: str | None,
+        group_id: int | None = None,
     ) -> tuple[str, int | None]:
         norm = normalize_front(front)
         row = self.conn.execute(
-            "SELECT id FROM knowledge_point WHERE front_norm = ?", (norm,)
+            "SELECT id FROM knowledge_point WHERE front_norm = ? AND group_id IS ?",
+            (norm, group_id),
         ).fetchone()
         if row is not None:
             return "attached", row["id"]
 
         if subtype == "personal":
-            action, kp_id, _ = self._create(front, module_id, None)
+            action, kp_id, _ = self._create(front, module_id, None, group_id)
             return action, kp_id
 
-        alias_hit = aliases.find_exact(self.conn, norm)
+        alias_hit = aliases.find_exact(self.conn, norm, group_id)
         if alias_hit is not None:
             return "attached", alias_hit[1]
 
         if self.store is None:
-            action, kp_id, _ = self._create(front, module_id, None)
+            action, kp_id, _ = self._create(front, module_id, None, group_id)
             return action, kp_id
 
         try:
             vector = self.client.embed([front])[0]
         except AIError as exc:
             self.vector_error = str(exc)
-            action, kp_id, _ = self._create(front, module_id, None)
+            action, kp_id, _ = self._create(front, module_id, None, group_id)
             return action, kp_id
 
         try:
@@ -316,23 +291,19 @@ class Merger:
         except sqlite3.Error as exc:
             self.store = None
             self.vector_error = str(exc)
-            action, kp_id, _ = self._create(front, module_id, vector)
+            action, kp_id, _ = self._create(front, module_id, vector, group_id)
             return action, kp_id
 
-        allowed = module_scope(self.conn, module_id)
         merged_hits: dict[int, dict] = {}
         for kp_id, score in hits:
             if score < self.low:
                 continue
             kp = self.conn.execute(
-                "SELECT id, front_md, module_id FROM knowledge_point WHERE id = ?",
+                "SELECT id, front_md, module_id, group_id FROM knowledge_point "
+                "WHERE id = ?",
                 (kp_id,),
             ).fetchone()
-            if kp is None:
-                continue
-            if allowed is not None and (
-                kp["module_id"] is None or kp["module_id"] not in allowed
-            ):
+            if kp is None or kp["group_id"] != group_id:
                 continue
             current = merged_hits.get(kp_id)
             if current is None or score > current["score"]:
@@ -352,12 +323,7 @@ class Merger:
             if score < self.low:
                 continue
             owner = aliases.resolve_owner(self.conn, alias_row["owner_kp_id"])
-            if owner is None:
-                continue
-            if allowed is not None and (
-                alias_row["module_id"] is None
-                or alias_row["module_id"] not in allowed
-            ):
+            if owner is None or alias_row["group_id"] != group_id:
                 continue
             current = merged_hits.get(owner)
             if current is None or score > current["score"]:
@@ -394,7 +360,7 @@ class Merger:
         if best_middle is not None:
             left_kp_id, score, reason = best_middle
             try:
-                kp_id, created = self._create_kp(front, module_id, vector)
+                kp_id, created = self._create_kp(front, module_id, vector, group_id)
             except sqlite3.Error as exc:
                 self.vector_error = str(exc)
                 return "failed", None
@@ -408,37 +374,46 @@ class Merger:
             )
             return "candidate", kp_id
 
-        action, kp_id, _ = self._create(front, module_id, vector)
+        action, kp_id, _ = self._create(front, module_id, vector, group_id)
         return action, kp_id
 
     def _create(
-        self, front: str, module_id: int | None, vector: list[float] | None
+        self,
+        front: str,
+        module_id: int | None,
+        vector: list[float] | None,
+        group_id: int | None = None,
     ) -> tuple[str, int | None, bool]:
         try:
-            kp_id, created = self._create_kp(front, module_id, vector)
+            kp_id, created = self._create_kp(front, module_id, vector, group_id)
         except sqlite3.Error as exc:
             self.vector_error = str(exc)
             return "failed", None, False
         return ("created" if created else "attached"), kp_id, created
 
     def _create_kp(
-        self, front: str, module_id: int | None, vector: list[float] | None
+        self,
+        front: str,
+        module_id: int | None,
+        vector: list[float] | None,
+        group_id: int | None = None,
     ) -> tuple[int, bool]:
         now = utc_now()
         norm = normalize_front(front)
         try:
             cursor = self.conn.execute(
                 "INSERT INTO knowledge_point"
-                "(front_md, back_md, front_norm, module_id, status, origin, "
+                "(front_md, back_md, front_norm, module_id, group_id, status, origin, "
                 " created_at, updated_at) "
-                "VALUES(?, '', ?, ?, 'draft', 'crawl', ?, ?)",
-                (front, norm, module_id, now, now),
+                "VALUES(?, '', ?, ?, ?, 'draft', 'crawl', ?, ?)",
+                (front, norm, module_id, group_id, now, now),
             )
             kp_id = cursor.lastrowid
             created = True
         except sqlite3.IntegrityError:
             row = self.conn.execute(
-                "SELECT id FROM knowledge_point WHERE front_norm = ?", (norm,)
+                "SELECT id FROM knowledge_point WHERE front_norm = ? AND group_id IS ?",
+                (norm, group_id),
             ).fetchone()
             if row is None:
                 raise

@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .. import config
+from .. import config, groups
 from ..db import connect, utc_now
 from .apkg import Package, read_package, write_media_file
 from .textfmt import anki_to_markdown, media_refs, normalize_front
@@ -91,11 +91,12 @@ def _import_package(package: Package, notify: Progress) -> ImportReport:
         for deck_name in package.decks.values():
             _ensure_module(conn, deck_name.replace("\x1f", "/"), cache)
         report.modules = len(cache) - modules_before
+        path_group = groups.path_group_map(conn)
 
         existing = {
-            row["front_norm"]: (row["id"], row["back_md"])
+            (row["group_id"], row["front_norm"]): (row["id"], row["back_md"])
             for row in conn.execute(
-                "SELECT id, front_norm, back_md FROM knowledge_point"
+                "SELECT id, group_id, front_norm, back_md FROM knowledge_point"
             )
         }
         now = utc_now()
@@ -126,33 +127,37 @@ def _import_package(package: Package, notify: Progress) -> ImportReport:
             report.cards_total += 1
             module_path = (note.deck or "").replace("\x1f", "/")
             module_id = cache.get(module_path)
+            group_id = path_group.get(module_path)
 
-            if front_norm in existing:
+            key = (group_id, front_norm)
+            if key in existing:
                 report.cards_skipped += 1
-                kp_id, current_back = existing[front_norm]
+                kp_id, current_back = existing[key]
                 if not current_back.strip() and back_md.strip():
                     conn.execute(
                         "UPDATE knowledge_point SET back_md = ?, status = 'ready', "
                         "updated_at = ? WHERE id = ?",
                         (back_md, now, kp_id),
                     )
-                    existing[front_norm] = (kp_id, back_md)
+                    existing[key] = (kp_id, back_md)
                     report.cards_filled += 1
             else:
                 cursor = conn.execute(
                     "INSERT INTO knowledge_point(front_md, back_md, front_norm, module_id, "
-                    "status, origin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'apkg', ?, ?)",
+                    "group_id, status, origin, created_at, updated_at) VALUES "
+                    "(?, ?, ?, ?, ?, ?, 'apkg', ?, ?)",
                     (
                         front_md,
                         back_md,
                         front_norm,
                         module_id,
+                        group_id,
                         "ready" if back_md.strip() else "draft",
                         now,
                         now,
                     ),
                 )
-                existing[front_norm] = (cursor.lastrowid, back_md)
+                existing[key] = (cursor.lastrowid, back_md)
                 report.cards_new += 1
 
             notify("读取卡片", seq, total_notes)

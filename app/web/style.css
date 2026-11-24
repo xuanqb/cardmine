@@ -2121,6 +2121,116 @@ body.drawer-instant .editor-layout {
   padding: 24px;
 }
 
+.feed-panel {
+  margin: 0 0 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+
+.feed-panel .panel-head {
+  margin-bottom: 8px;
+}
+
+.feed-head-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.feed-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.feed-form input,
+.feed-form select,
+.feed-actions select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.feed-form input[type="url"] {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.feed-form input[type="text"] {
+  width: 150px;
+}
+
+.feed-form input[type="number"] {
+  width: 82px;
+}
+
+.feed-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.feed-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.feed-info {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.feed-info h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.feed-url {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.feed-stats {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.feed-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.feed-actions .check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.feed-list .empty {
+  padding: 20px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .post-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

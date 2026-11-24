@@ -68,6 +68,10 @@ def resolve_owner(conn, kp_id: int | None) -> int | None:
 def record_merge(conn, action_id: int, survivor_id: int, sources) -> None:
     """把被合并卡片的正面写成别名，并记录来源卡 -> 存活卡的合并链。"""
     now = utc_now()
+    owner = conn.execute(
+        "SELECT group_id FROM knowledge_point WHERE id = ?", (survivor_id,)
+    ).fetchone()
+    group_id = owner["group_id"] if owner is not None else None
     for source in sources:
         source_id = int(_field(source, "id"))
         if source_id == survivor_id:
@@ -78,26 +82,29 @@ def record_merge(conn, action_id: int, survivor_id: int, sources) -> None:
         front_norm = _field(source, "front_norm") or normalize_front(front_md)
         module_id = _field(source, "module_id")
         existing = conn.execute(
-            "SELECT id, front_md FROM kp_alias WHERE front_norm = ?", (front_norm,)
+            "SELECT id, front_md FROM kp_alias WHERE front_norm = ? AND group_id IS ?",
+            (front_norm, group_id),
         ).fetchone()
         if existing is None:
             conn.execute(
                 "INSERT INTO kp_alias"
-                "(owner_kp_id, front_md, front_norm, module_id, merge_action_id, created_at) "
-                "VALUES(?, ?, ?, ?, ?, ?)",
-                (survivor_id, front_md, front_norm, module_id, action_id, now),
+                "(owner_kp_id, front_md, front_norm, module_id, group_id, "
+                " merge_action_id, created_at) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (survivor_id, front_md, front_norm, module_id, group_id, action_id, now),
             )
         elif existing["front_md"] != front_md:
             conn.execute(
                 "UPDATE kp_alias SET owner_kp_id = ?, front_md = ?, module_id = ?, "
-                "merge_action_id = ?, embedding = NULL, embed_dim = NULL WHERE id = ?",
-                (survivor_id, front_md, module_id, action_id, existing["id"]),
+                "group_id = ?, merge_action_id = ?, embedding = NULL, embed_dim = NULL "
+                "WHERE id = ?",
+                (survivor_id, front_md, module_id, group_id, action_id, existing["id"]),
             )
         else:
             conn.execute(
-                "UPDATE kp_alias SET owner_kp_id = ?, module_id = ?, "
+                "UPDATE kp_alias SET owner_kp_id = ?, module_id = ?, group_id = ?, "
                 "merge_action_id = ? WHERE id = ?",
-                (survivor_id, module_id, action_id, existing["id"]),
+                (survivor_id, module_id, group_id, action_id, existing["id"]),
             )
         conn.execute(
             "INSERT INTO kp_merge_edge"
@@ -116,9 +123,12 @@ def remove_merge(conn, action_id: int) -> None:
     conn.execute("DELETE FROM kp_merge_edge WHERE action_id = ?", (action_id,))
 
 
-def find_exact(conn, front_norm: str) -> tuple[object, int] | None:
+def find_exact(
+    conn, front_norm: str, group_id: int | None = None
+) -> tuple[object, int] | None:
     row = conn.execute(
-        "SELECT * FROM kp_alias WHERE front_norm = ?", (front_norm,)
+        "SELECT * FROM kp_alias WHERE front_norm = ? AND group_id IS ?",
+        (front_norm, group_id),
     ).fetchone()
     if row is None:
         return None

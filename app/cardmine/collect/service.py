@@ -6,7 +6,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-from .. import config
+from .. import config, groups
 from ..ai import AIClient, AIError
 from ..anki import AnkiClient, push
 from ..db import connect, utc_now
@@ -64,10 +64,12 @@ def ensure_default_feed(settings: dict) -> None:
                 (url, interval, rows[0]["id"]),
             )
             return
+        group = groups.main_group(conn)
         conn.execute(
-            "INSERT INTO feed(url, name, enabled, interval_minutes) VALUES(?, ?, 1, ?) "
+            "INSERT INTO feed(url, name, enabled, interval_minutes, group_id) "
+            "VALUES(?, ?, 1, ?, ?) "
             "ON CONFLICT(url) DO UPDATE SET interval_minutes = excluded.interval_minutes",
-            (url, "牛客面经", interval),
+            (url, "牛客面经", interval, group["id"] if group is not None else None),
         )
 
 
@@ -123,9 +125,16 @@ def _process_post(
     post_id: int,
     report: FetchReport,
 ) -> None:
-    post = conn.execute("SELECT * FROM post WHERE id = ?", (post_id,)).fetchone()
+    post = conn.execute(
+        "SELECT p.*, f.group_id AS feed_group_id "
+        "FROM post p JOIN feed f ON f.id = p.feed_id WHERE p.id = ?",
+        (post_id,),
+    ).fetchone()
     if post is None:
         return
+
+    group_id = post["feed_group_id"]
+    group = groups.get_group(conn, group_id)
 
     if not client.configured:
         conn.execute("UPDATE post SET ai_status='failed' WHERE id=?", (post_id,))
@@ -134,11 +143,16 @@ def _process_post(
         report.errors.append(f"面经 {post_id}: 未配置 AI，无法切题")
         return
 
-    module_paths = [
+    module_paths = groups.subtree_paths(conn, group_id) if group is not None else [
         row["path"] for row in conn.execute("SELECT path FROM module ORDER BY path")
     ]
     try:
-        mentions = extract_mentions(client, dict(post), module_paths)
+        mentions = extract_mentions(
+            client,
+            dict(post),
+            module_paths,
+            group["path"] if group is not None else None,
+        )
     except AIError as exc:
         conn.execute("UPDATE post SET ai_status='failed' WHERE id=?", (post_id,))
         conn.commit()
@@ -151,7 +165,7 @@ def _process_post(
 
     for seq, item in enumerate(mentions, start=1):
         module_id = (
-            ensure_module(conn, item["module"], "ai") if item["module"] else None
+            ensure_module(conn, item["module"], "ai", group) if item["module"] else None
         )
         cursor = conn.execute(
             "INSERT INTO mention"
@@ -170,7 +184,7 @@ def _process_post(
         )
         mention_id = cursor.lastrowid
         action, kp_id = merger.resolve(
-            item["question"], module_id, mention_id, item["subtype"]
+            item["question"], module_id, mention_id, item["subtype"], group_id
         )
         status = "pending" if action in ("candidate", "failed") else "attached"
         conn.execute(

@@ -124,7 +124,7 @@ docker compose up -d
 把已有 apkg 导入 Anki 容器：
 
 ```bash
-docker cp Hollis八股文.apkg cardmine-anki:/data/anki/import.apkg
+docker cp my-deck.apkg cardmine-anki:/data/anki/import.apkg
 
 docker exec -i cardmine-app python - <<'PY'
 import json, urllib.request

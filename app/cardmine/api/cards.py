@@ -4,7 +4,7 @@ from contextlib import closing
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .. import aliases, config, review
+from .. import aliases, config, groups, review
 from ..anki.client import AnkiClient, AnkiError
 from ..db import connect, utc_now
 from ..importer.textfmt import normalize_front
@@ -387,10 +387,31 @@ def update_card(card_id: int, payload: CardUpdate) -> dict:
 
     with closing(connect()) as conn, conn:
         current = conn.execute(
-            "SELECT id, status, back_md FROM knowledge_point WHERE id = ?", (card_id,)
+            "SELECT id, status, back_md, front_norm, group_id FROM knowledge_point "
+            "WHERE id = ?",
+            (card_id,),
         ).fetchone()
         if current is None:
             raise HTTPException(status_code=404, detail="卡片不存在")
+
+        target_group = current["group_id"]
+        if "module_id" in updates:
+            exists = conn.execute(
+                "SELECT 1 FROM module WHERE id = ?", (updates["module_id"],)
+            ).fetchone()
+            if exists is None:
+                raise HTTPException(status_code=400, detail="模块不存在")
+            target_group = groups.root_of(conn, updates["module_id"])
+            if "front_md" not in updates:
+                collision = conn.execute(
+                    "SELECT id FROM knowledge_point WHERE front_norm = ? "
+                    "AND group_id IS ? AND id != ?",
+                    (current["front_norm"], target_group, card_id),
+                ).fetchone()
+                if collision:
+                    raise HTTPException(
+                        status_code=409, detail="目标组内已有相同问法，请使用合并功能"
+                    )
 
         fields: list[str] = []
         params: list = []
@@ -401,12 +422,13 @@ def update_card(card_id: int, payload: CardUpdate) -> dict:
                 raise HTTPException(status_code=400, detail="正面不能为空")
             front_norm = normalize_front(front_md)
             collision = conn.execute(
-                "SELECT id FROM knowledge_point WHERE front_norm = ? AND id != ?",
-                (front_norm, card_id),
+                "SELECT id FROM knowledge_point WHERE front_norm = ? "
+                "AND group_id IS ? AND id != ?",
+                (front_norm, target_group, card_id),
             ).fetchone()
             if collision:
                 raise HTTPException(
-                    status_code=409, detail="该问法已存在，请使用合并功能"
+                    status_code=409, detail="该组内已有相同问法，请使用合并功能"
                 )
             fields.extend(["front_md = ?", "front_norm = ?"])
             params.extend([front_md, front_norm])
@@ -416,13 +438,8 @@ def update_card(card_id: int, payload: CardUpdate) -> dict:
             params.append(updates["back_md"] or "")
 
         if "module_id" in updates:
-            exists = conn.execute(
-                "SELECT 1 FROM module WHERE id = ?", (updates["module_id"],)
-            ).fetchone()
-            if exists is None:
-                raise HTTPException(status_code=400, detail="模块不存在")
-            fields.append("module_id = ?")
-            params.append(updates["module_id"])
+            fields.extend(["module_id = ?", "group_id = ?"])
+            params.extend([updates["module_id"], target_group])
 
         if "status" in updates:
             status = updates["status"]
@@ -446,5 +463,10 @@ def update_card(card_id: int, payload: CardUpdate) -> dict:
             conn.execute(
                 f"UPDATE knowledge_point SET {', '.join(fields)} WHERE id = ?", params
             )
+            if target_group != current["group_id"]:
+                conn.execute(
+                    "UPDATE kp_alias SET group_id = ? WHERE owner_kp_id = ?",
+                    (target_group, card_id),
+                )
 
         return _fetch_detail(conn, card_id)

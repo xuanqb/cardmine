@@ -18,11 +18,11 @@ SYSTEM_PROMPT = """你是一名面经题库整理助手。用户会给出一篇�
 4. nontech 必须给出 subtype：template（自我介绍、优缺点、职业规划、为什么选择我们等通用模板题）或 personal（介绍你的项目、项目难点等个性化经历题）；其它 topic 的 subtype 为 null。
 5. section 为该问题所属环节（一面/二面/三面/HR面/部门/岗位/时长/算法环节），无法判断时为空字符串。
 6. context 摘录面经中该问题附近的原句（最多 2 句），用于补答案时参考。
-7. module 优先从给定模块列表中选择最合适的路径；确实没有合适模块时，新路径必须以已有顶层模块开头（通常是 Hollis八股文），禁止创建新的顶层模块。路径最多 3 级，用 / 分隔，例如 Hollis八股文/AI应用/大模型应用。
+7. module 优先从给定模块列表中选择最合适的路径；确实没有合适模块时，只能在「目标组」内新建子路径，且必须以目标组路径开头，禁止创建新的顶层模块或跨组。路径最多 3 级，用 / 分隔，例如 <目标组路径>/AI应用/大模型应用。
 8. 同一篇面经中语义相同的问题只输出一次。
 
 只输出 JSON，格式：
-{"mentions":[{"question":"...","topic":"tech","subtype":null,"section":"一面","context":"...","module":"Hollis八股文/MySQL"}]}"""
+{"mentions":[{"question":"...","topic":"tech","subtype":null,"section":"一面","context":"...","module":"<目标组路径>/MySQL"}]}"""
 
 
 def _sanitize_module(value) -> str:
@@ -86,7 +86,10 @@ def normalize_mentions(payload: dict) -> list[dict]:
 
 
 def extract_mentions(
-    client: AIClient, post: dict, module_paths: list[str]
+    client: AIClient,
+    post: dict,
+    module_paths: list[str],
+    group_path: str | None = None,
 ) -> list[dict]:
     text = (post.get("clean_md") or "")[:MAX_INPUT_CHARS]
     if not text:
@@ -95,6 +98,7 @@ def extract_mentions(
     user = (
         f"标题：{post.get('title') or ''}\n"
         f"作者：{post.get('author') or ''}\n"
+        f"目标组：{group_path or '未分组'}\n"
         f"已有模块：\n" + "\n".join(f"- {path}" for path in module_paths[:80]) + "\n\n"
         f"面经正文：\n{text}"
     )

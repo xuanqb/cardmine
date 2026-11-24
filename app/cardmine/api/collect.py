@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from .. import groups
 from ..collect import is_running, run_fetch
 from ..db import connect, utc_now
 from .settings import load_settings
@@ -23,6 +24,7 @@ class FeedIn(BaseModel):
     name: str | None = None
     enabled: bool = True
     interval_minutes: int = Field(60, ge=5)
+    group_id: int | None = None
 
 
 class FeedPatch(BaseModel):
@@ -30,6 +32,7 @@ class FeedPatch(BaseModel):
     name: str | None = None
     enabled: bool | None = None
     interval_minutes: int | None = Field(None, ge=5)
+    group_id: int | None = None
 
 
 def _feed_row(row) -> dict[str, Any]:
@@ -40,17 +43,36 @@ def _feed_row(row) -> dict[str, Any]:
         "enabled": bool(row["enabled"]),
         "interval_minutes": row["interval_minutes"],
         "last_fetched_at": row["last_fetched_at"],
+        "group_id": row["group_id"],
+        "group_name": row["group_name"],
+        "group_path": row["group_path"],
     }
+
+
+FEED_SELECT = (
+    "SELECT f.*, m.name AS group_name, m.path AS group_path, "
+    "(SELECT COUNT(*) FROM post p WHERE p.feed_id = f.id) AS posts, "
+    "(SELECT COUNT(*) FROM mention me JOIN post p ON p.id = me.post_id "
+    " WHERE p.feed_id = f.id) AS mentions "
+    "FROM feed f LEFT JOIN module m ON m.id = f.group_id "
+)
+
+
+def _check_group(conn, group_id: int | None) -> None:
+    if group_id is not None and groups.get_group(conn, group_id) is None:
+        raise HTTPException(status_code=400, detail="目标组必须是顶层模块")
 
 
 @router.get("/feeds")
 def list_feeds() -> dict:
     with closing(connect()) as conn:
-        rows = conn.execute(
-            "SELECT f.*, (SELECT COUNT(*) FROM post p WHERE p.feed_id = f.id) AS posts "
-            "FROM feed f ORDER BY f.id"
-        ).fetchall()
-    return {"items": [{**_feed_row(row), "posts": row["posts"]} for row in rows]}
+        rows = conn.execute(f"{FEED_SELECT} ORDER BY f.id").fetchall()
+    return {
+        "items": [
+            {**_feed_row(row), "posts": row["posts"], "mentions": row["mentions"]}
+            for row in rows
+        ]
+    }
 
 
 @router.post("/feeds")
@@ -58,14 +80,17 @@ def create_feed(payload: FeedIn) -> dict:
     if not payload.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="RSS 地址必须以 http(s):// 开头")
     with closing(connect()) as conn, conn:
+        _check_group(conn, payload.group_id)
         try:
             cursor = conn.execute(
-                "INSERT INTO feed(url, name, enabled, interval_minutes) VALUES(?,?,?,?)",
+                "INSERT INTO feed(url, name, enabled, interval_minutes, group_id) "
+                "VALUES(?,?,?,?,?)",
                 (
                     payload.url.strip(),
                     payload.name,
                     int(payload.enabled),
                     payload.interval_minutes,
+                    payload.group_id,
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -76,7 +101,11 @@ def create_feed(payload: FeedIn) -> dict:
 
 @router.patch("/feeds/{feed_id}")
 def update_feed(feed_id: int, payload: FeedPatch) -> dict:
-    updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+    updates = {
+        key: value
+        for key, value in payload.model_dump(exclude_unset=True).items()
+        if value is not None or key == "group_id"
+    }
     if "url" in updates and not updates["url"].startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="RSS 地址必须以 http(s):// 开头")
     if "enabled" in updates:
@@ -86,13 +115,14 @@ def update_feed(feed_id: int, payload: FeedPatch) -> dict:
         row = conn.execute("SELECT id FROM feed WHERE id = ?", (feed_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="RSS 源不存在")
+        _check_group(conn, updates.get("group_id"))
         if updates:
             columns = ", ".join(f"{key} = ?" for key in updates)
             conn.execute(
                 f"UPDATE feed SET {columns} WHERE id = ?",
                 (*updates.values(), feed_id),
             )
-        result = conn.execute("SELECT * FROM feed WHERE id = ?", (feed_id,)).fetchone()
+        result = conn.execute(f"{FEED_SELECT} WHERE f.id = ?", (feed_id,)).fetchone()
     return _feed_row(result)
 
 

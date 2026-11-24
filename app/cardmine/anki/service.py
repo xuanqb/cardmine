@@ -9,7 +9,7 @@ import re
 from contextlib import closing
 from typing import Callable
 
-from .. import config
+from .. import config, groups
 from ..db import connect, utc_now
 from ..export import local_media_refs
 from ..importer.textfmt import (
@@ -121,13 +121,36 @@ def takeover(client: AnkiClient, model_name: str, progress: Progress | None = No
     _notify(progress, "校验 Anki", 1, 1)
 
     with closing(connect()) as conn:
-        pending = {
-            row["front_norm"]: row["id"]
+        path_group = groups.path_group_map(conn)
+        root_by_name = {
+            row["name"]: int(row["id"])
             for row in conn.execute(
-                "SELECT id, front_norm FROM knowledge_point "
-                "WHERE anki_note_id IS NULL AND status != 'archived'"
+                "SELECT id, name FROM module WHERE parent_id IS NULL"
             )
         }
+        rows = conn.execute(
+            "SELECT id, front_norm, group_id FROM knowledge_point "
+            "WHERE anki_note_id IS NULL AND status != 'archived'"
+        ).fetchall()
+        pending = {
+            (row["group_id"], row["front_norm"]): row["id"] for row in rows
+        }
+        by_norm: dict[str, list[tuple[int | None, int]]] = {}
+        for row in rows:
+            by_norm.setdefault(row["front_norm"], []).append(
+                (row["group_id"], row["id"])
+            )
+
+    def deck_group(deck: str) -> int | None:
+        path = (deck or "").replace("::", "/")
+        if not path:
+            return None
+        group_id = path_group.get(path)
+        if group_id is None:
+            group_id = path_group.get(path.split("/", 1)[0])
+        if group_id is None:
+            group_id = root_by_name.get(path.split("/", 1)[0])
+        return group_id
 
     if not pending:
         return {
@@ -166,9 +189,19 @@ def takeover(client: AnkiClient, model_name: str, progress: Progress | None = No
             fields = info.get("fields") or {}
             front = (fields.get("Front") or {}).get("value", "")
             norm = normalize_front(anki_to_markdown(front))
-            kp_id = pending.pop(norm, None)
+            note_id = int(info["noteId"])
+            group_id = deck_group(note_decks.get(note_id, ""))
+            kp_id = pending.pop((group_id, norm), None)
+            if kp_id is None and group_id is None:
+                candidates = [
+                    item
+                    for item in by_norm.get(norm, [])
+                    if pending.get((item[0], norm)) == item[1]
+                ]
+                if len(candidates) == 1:
+                    matched_group, kp_id = candidates[0]
+                    pending.pop((matched_group, norm), None)
             if kp_id is not None:
-                note_id = int(info["noteId"])
                 matches.append((kp_id, note_id, note_decks.get(note_id, "")))
         _notify(progress, "匹配笔记", min(offset + 500, len(ordered)), len(ordered))
 
@@ -440,12 +473,12 @@ def _orphan_relations(conn, fronts: dict[int, str]) -> dict[int, dict]:
             }
             continue
 
-        card = conn.execute(
-            "SELECT id FROM knowledge_point WHERE front_norm = ? LIMIT 1",
+        cards = conn.execute(
+            "SELECT id FROM knowledge_point WHERE front_norm = ? LIMIT 2",
             (front_norm,),
-        ).fetchone()
-        if card is not None:
-            result[note_id] = card_info(card["id"], "front", None)
+        ).fetchall()
+        if len(cards) == 1:
+            result[note_id] = card_info(cards[0]["id"], "front", None)
 
     return result
 

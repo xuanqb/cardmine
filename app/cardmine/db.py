@@ -49,7 +49,6 @@ def _normalize_ai_roots(conn: sqlite3.Connection) -> None:
         humans,
         key=lambda row: (
             _subtree_card_count(conn, row["id"]),
-            row["name"] == "Hollis八股文",
             -row["id"],
         ),
     )
@@ -80,6 +79,19 @@ def _normalize_ai_roots(conn: sqlite3.Connection) -> None:
         conn.execute(
             "UPDATE module SET parent_id = ?, sort = ? WHERE id = ?",
             (target["id"], sort, root["id"]),
+        )
+        # 被并入的顶层模块不再是组，归属它的卡片、别名与来源改指向新组
+        conn.execute(
+            "UPDATE knowledge_point SET group_id = ? WHERE group_id = ?",
+            (target["id"], root["id"]),
+        )
+        conn.execute(
+            "UPDATE kp_alias SET group_id = ? WHERE group_id = ?",
+            (target["id"], root["id"]),
+        )
+        conn.execute(
+            "UPDATE feed SET group_id = ? WHERE group_id = ?",
+            (target["id"], root["id"]),
         )
 
 

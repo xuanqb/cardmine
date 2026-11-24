@@ -40,7 +40,33 @@
           <option value="failed">失败</option>
         </select>
         <button id="fetch-run">立即抓取</button>
+        <button class="ghost" id="feed-manage">来源管理</button>
       </div>
+
+      <section class="feed-panel" id="feed-panel" hidden>
+        <div class="panel-head">
+          <h2>来源管理</h2>
+          <div class="feed-head-actions">
+            <button class="ghost" id="group-create">新建组</button>
+            <button class="ghost" id="feed-close">收起</button>
+          </div>
+        </div>
+        <p class="hint">
+          每个来源指定一个目标组，新面经只在该组内切题与去重。抓取仍由「立即抓取」统一执行。
+        </p>
+        <form class="feed-form" id="feed-form">
+          <input type="url" id="feed-url" placeholder="RSS 地址（https://…）" required>
+          <input type="text" id="feed-name" placeholder="备注名（可选）" maxlength="40">
+          <select id="feed-group" aria-label="目标组">
+            <option value="">未分组</option>
+          </select>
+          <input type="number" id="feed-interval" value="60" min="5" step="5"
+                 aria-label="抓取间隔（分钟）">
+          <button type="submit" id="feed-submit">添加来源</button>
+          <button type="button" class="ghost" id="feed-cancel" hidden>取消编辑</button>
+        </form>
+        <div class="feed-list" id="feed-list"></div>
+      </section>
 
       <div class="progress-wrap" id="fetch-progress" hidden>
         <div class="progress-head">

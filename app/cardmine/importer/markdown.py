@@ -10,7 +10,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 
-from .. import config
+from .. import config, groups
 from ..db import connect, utc_now
 from .textfmt import normalize_front, normalize_media_ref
 
@@ -310,11 +310,14 @@ def _import_questions(
                     sort=child_sort[section],
                 )
         report.modules = len(cache) - modules_before
+        group_id = groups.root_of(conn, root_id)
 
         existing = {
             row["front_norm"]: (row["id"], row["back_md"], row["origin"])
             for row in conn.execute(
-                "SELECT id, front_norm, back_md, origin FROM knowledge_point"
+                "SELECT id, front_norm, back_md, origin FROM knowledge_point "
+                "WHERE group_id IS ?",
+                (group_id,),
             )
         }
         now = utc_now()
@@ -368,9 +371,17 @@ def _import_questions(
 
             cursor = conn.execute(
                 "INSERT INTO knowledge_point(front_md, back_md, front_norm, module_id, "
-                "status, origin, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', "
-                "'manual', ?, ?)",
-                (question.front, question.back, front_norm, module_id, now, now),
+                "group_id, status, origin, created_at, updated_at) VALUES "
+                "(?, ?, ?, ?, ?, 'draft', 'manual', ?, ?)",
+                (
+                    question.front,
+                    question.back,
+                    front_norm,
+                    module_id,
+                    group_id,
+                    now,
+                    now,
+                ),
             )
             existing[front_norm] = (cursor.lastrowid, question.back, "manual")
             report.cards_new += 1
