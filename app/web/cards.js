@@ -20,6 +20,11 @@ const nextButton = document.getElementById("next");
 const pageInfo = document.getElementById("page-info");
 const treeAll = document.getElementById("tree-all");
 const mergeButton = document.getElementById("merge-button");
+const archiveButton = document.getElementById("archive-button");
+const selectionInfo = document.getElementById("selection-info");
+const selectionCount = document.getElementById("selection-count");
+const clearSelectionButton = document.getElementById("clear-selection");
+const toast = document.getElementById("toast");
 const mergeModal = document.getElementById("merge-modal");
 const mergeCardList = document.getElementById("merge-card-list");
 const mergeOptions = document.getElementById("merge-options");
@@ -28,12 +33,15 @@ const mergeCancel = document.getElementById("merge-cancel");
 const mergeConfirm = document.getElementById("merge-confirm");
 
 const selectedIds = new Set();
+let archiveBusy = false;
+let toastTimer = null;
 let mergeDetails = [];
 let mergeSurvivorId = null;
 let mergeBusy = false;
 let deleteUnclaimedNotes = false;
 
 const FILTER_KEY = "cardmine.cards.filters";
+const SELECTION_KEY = "cardmine.cards.selection";
 const SORT_VALUES = new Set(["updated_desc", "mentions_desc", "recent_desc"]);
 const STATUS_VALUES = new Set(["draft", "ready", "archived"]);
 
@@ -90,6 +98,36 @@ function persistState() {
   } catch {
     /* 隐私模式下忽略 */
   }
+}
+
+function restoreSelection() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(SELECTION_KEY) || "[]");
+    if (!Array.isArray(saved)) return;
+    for (const id of saved) {
+      if (Number.isInteger(id) && id > 0) selectedIds.add(id);
+    }
+  } catch {
+    /* 隐私模式下忽略 */
+  }
+}
+
+function persistSelection() {
+  try {
+    sessionStorage.setItem(SELECTION_KEY, JSON.stringify([...selectedIds]));
+  } catch {
+    /* 隐私模式下忽略 */
+  }
+}
+
+function showToast(message, isError = false) {
+  toast.textContent = message;
+  toast.classList.toggle("error", isError);
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.hidden = true;
+  }, 3200);
 }
 
 function syncControls() {
@@ -197,7 +235,7 @@ function renderCardRow(item) {
   checkbox.type = "checkbox";
   checkbox.className = "card-select";
   checkbox.checked = selectedIds.has(item.id);
-  checkbox.setAttribute("aria-label", "选择该卡片用于合并");
+  checkbox.setAttribute("aria-label", "选择该卡片");
   checkbox.addEventListener("change", () => {
     if (checkbox.checked) {
       selectedIds.add(item.id);
@@ -205,6 +243,7 @@ function renderCardRow(item) {
       selectedIds.delete(item.id);
     }
     wrapper.classList.toggle("selected", checkbox.checked);
+    persistSelection();
     updateSelectionUI();
   });
   wrapper.classList.toggle("selected", checkbox.checked);
@@ -269,10 +308,80 @@ function renderCardRow(item) {
 }
 
 function updateSelectionUI() {
-  mergeButton.disabled = selectedIds.size < 2;
-  mergeButton.textContent = selectedIds.size
-    ? `合并所选（${selectedIds.size}）`
-    : "合并所选";
+  const count = selectedIds.size;
+  mergeButton.disabled = count < 2;
+  mergeButton.textContent = count ? `合并所选（${count}）` : "合并所选";
+  archiveButton.disabled = count === 0 || archiveBusy;
+  archiveButton.textContent = archiveBusy
+    ? "归档中…"
+    : count
+      ? `归档所选（${count}）`
+      : "归档所选";
+  selectionInfo.hidden = count === 0;
+  selectionCount.textContent = String(count);
+  clearSelectionButton.hidden = count === 0;
+}
+
+function removeFromSelection(ids) {
+  for (const id of ids) selectedIds.delete(id);
+  persistSelection();
+  updateSelectionUI();
+}
+
+async function archiveSelected() {
+  if (archiveBusy || selectedIds.size === 0) return;
+  const ids = [...selectedIds];
+  archiveBusy = true;
+  updateSelectionUI();
+  try {
+    const check = await window.cm.fetchJSON("/api/cards/archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, dry_run: true }),
+    });
+
+    if (check.to_archive === 0) {
+      removeFromSelection(ids);
+      const parts = ["没有需要归档的卡片"];
+      if (check.skipped) parts.push(`${check.skipped} 张已归档`);
+      if (check.failed) parts.push(`${check.failed} 张不存在`);
+      showToast(parts.join("，"));
+      return;
+    }
+
+    if (check.linked_notes > 0) {
+      const confirmed = window.confirm(
+        `将归档 ${check.to_archive} 张卡片，其中 ${check.linked_notes} 张已关联 Anki 笔记，` +
+          "下次推送时会从 Anki 删除对应笔记。归档后可在「已归档」筛选中改回原状态。确认继续？",
+      );
+      if (!confirmed) return;
+    }
+
+    const result = await window.cm.fetchJSON("/api/cards/archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, dry_run: false }),
+    });
+
+    removeFromSelection([
+      ...result.archived_ids,
+      ...result.skipped_ids,
+      ...result.failed.map((item) => item.id),
+    ]);
+
+    const parts = [`已归档 ${result.archived_ids.length} 张`];
+    if (result.skipped_ids.length) {
+      parts.push(`跳过 ${result.skipped_ids.length} 张`);
+    }
+    if (result.failed.length) parts.push(`${result.failed.length} 张不存在`);
+    showToast(parts.join("，"));
+    await loadCards();
+  } catch (error) {
+    showToast(error.message || "归档失败", true);
+  } finally {
+    archiveBusy = false;
+    updateSelectionUI();
+  }
 }
 
 function renderPager() {
@@ -303,6 +412,12 @@ async function loadCards() {
   try {
     const data = await window.cm.fetchJSON(`/api/cards?${params.toString()}`);
     state.total = data.total;
+    const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
+    if (state.page > pages) {
+      state.page = pages;
+      persistState();
+      return loadCards();
+    }
     listBox.replaceChildren();
     if (data.items.length === 0) {
       const empty = document.createElement("p");
@@ -502,6 +617,7 @@ async function confirmMerge() {
     }
     mergeModal.hidden = true;
     selectedIds.clear();
+    persistSelection();
     window.location.href = `/cards/${result.card.id}`;
   } catch (error) {
     mergeWarnings.replaceChildren();
@@ -581,6 +697,16 @@ nextButton.addEventListener("click", () => {
 });
 
 mergeButton.addEventListener("click", openMergeModal);
+archiveButton.addEventListener("click", archiveSelected);
+clearSelectionButton.addEventListener("click", () => {
+  selectedIds.clear();
+  persistSelection();
+  updateSelectionUI();
+  document.querySelectorAll(".card-select").forEach((box) => {
+    box.checked = false;
+    box.closest(".card-item")?.classList.remove("selected");
+  });
+});
 mergeCancel.addEventListener("click", closeMergeModal);
 mergeConfirm.addEventListener("click", confirmMerge);
 mergeModal.addEventListener("click", (event) => {
@@ -591,6 +717,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 restoreState();
+restoreSelection();
 syncControls();
 updateSelectionUI();
 loadModules();

@@ -51,6 +51,11 @@
           <option value="recent_desc">按最近出现</option>
         </select>
         <button type="button" class="ghost" id="merge-button" disabled>合并所选</button>
+        <button type="button" class="ghost" id="archive-button" disabled>归档所选</button>
+        <span class="selection-info" id="selection-info" hidden>
+          已选 <strong id="selection-count">0</strong> 张
+        </span>
+        <button type="button" class="ghost" id="clear-selection" hidden>清空选择</button>
       </div>
 
       <div class="card-list" id="card-list"></div>
@@ -78,6 +83,8 @@
       </div>
     </div>
   </div>
+
+  <div class="toast" id="toast" hidden></div>
 
   <script src="/static/common.js"></script>
   <script src="/static/cards.js"></script>

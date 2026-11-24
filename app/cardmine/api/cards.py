@@ -276,6 +276,67 @@ def merge_cards(payload: CardMerge) -> dict:
     return result
 
 
+class CardArchive(BaseModel):
+    ids: list[int] = Field(min_length=1)
+    dry_run: bool = False
+
+
+@router.post("/cards/archive")
+def archive_cards(payload: CardArchive) -> dict:
+    ids = list(dict.fromkeys(payload.ids))
+    placeholders = ",".join("?" for _ in ids)
+
+    with closing(connect()) as conn, conn:
+        rows = conn.execute(
+            f"""
+            SELECT kp.id, kp.status,
+                   COALESCE(kp.anki_note_id, s.anki_note_id) AS note_id
+            FROM knowledge_point kp
+            LEFT JOIN anki_sync s ON s.kp_id = kp.id
+            WHERE kp.id IN ({placeholders})
+            """,
+            ids,
+        ).fetchall()
+        found = {row["id"]: row for row in rows}
+
+        missing = [card_id for card_id in ids if card_id not in found]
+        skipped = [
+            card_id
+            for card_id in ids
+            if card_id in found and found[card_id]["status"] == "archived"
+        ]
+        to_archive = [
+            card_id
+            for card_id in ids
+            if card_id in found and found[card_id]["status"] != "archived"
+        ]
+
+        if payload.dry_run:
+            return {
+                "dry_run": True,
+                "to_archive": len(to_archive),
+                "skipped": len(skipped),
+                "failed": len(missing),
+                "linked_notes": sum(
+                    1 for card_id in to_archive if found[card_id]["note_id"]
+                ),
+            }
+
+        if to_archive:
+            placeholders = ",".join("?" for _ in to_archive)
+            conn.execute(
+                f"UPDATE knowledge_point SET status = 'archived', updated_at = ? "
+                f"WHERE id IN ({placeholders})",
+                [utc_now(), *to_archive],
+            )
+
+    return {
+        "archived_ids": to_archive,
+        "skipped_ids": skipped,
+        "failed": [{"id": card_id, "reason": "卡片不存在"} for card_id in missing],
+    }
+
+
 class CardUpdate(BaseModel):
     front_md: str | None = None
     back_md: str | None = None

@@ -849,6 +849,19 @@ button.danger:disabled {
   align-items: center;
 }
 
+.selection-info {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  align-self: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.selection-info[hidden] {
+  display: none;
+}
+
 .status-filter .chip {
   padding: 6px 11px;
   border: 1px solid var(--border);
