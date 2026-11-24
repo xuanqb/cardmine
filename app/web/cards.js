@@ -24,6 +24,7 @@ const archiveButton = document.getElementById("archive-button");
 const readyButton = document.getElementById("ready-button");
 const selectionInfo = document.getElementById("selection-info");
 const selectionCount = document.getElementById("selection-count");
+const selectAllButton = document.getElementById("select-all-button");
 const clearSelectionButton = document.getElementById("clear-selection");
 const toast = document.getElementById("toast");
 const mergeModal = document.getElementById("merge-modal");
@@ -36,6 +37,7 @@ const mergeConfirm = document.getElementById("merge-confirm");
 const selectedIds = new Set();
 let archiveBusy = false;
 let readyBusy = false;
+let selectAllBusy = false;
 let toastTimer = null;
 let mergeDetails = [];
 let mergeSurvivorId = null;
@@ -426,24 +428,63 @@ async function markSelectedReady() {
   }
 }
 
+async function selectAllFiltered() {
+  if (selectAllBusy || state.total === 0) return;
+
+  selectAllBusy = true;
+  renderPager();
+  try {
+    const params = buildFilterParams();
+    params.set("page_size", "100");
+    let page = 1;
+    let fetched = 0;
+    while (fetched < state.total) {
+      params.set("page", String(page));
+      const data = await window.cm.fetchJSON(`/api/cards?${params.toString()}`);
+      if (!data.items.length) break;
+      for (const item of data.items) selectedIds.add(item.id);
+      fetched += data.items.length;
+      page += 1;
+    }
+    persistSelection();
+    updateSelectionUI();
+    await loadCards();
+    showToast(`已全选当前筛选的 ${state.total} 张，共选中 ${selectedIds.size} 张`);
+  } catch (error) {
+    showToast(error.message || "全选失败", true);
+  } finally {
+    selectAllBusy = false;
+    renderPager();
+  }
+}
+
 function renderPager() {
   const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
   pageInfo.textContent = `第 ${state.page} / ${pages} 页 · 共 ${state.total} 张`;
   prevButton.disabled = state.page <= 1;
   nextButton.disabled = state.page >= pages;
+  selectAllButton.disabled = state.total === 0 || selectAllBusy;
+  selectAllButton.textContent = selectAllBusy
+    ? "选择中…"
+    : state.total
+      ? `全选结果（${state.total}）`
+      : "全选结果";
 }
 
-async function loadCards() {
-  persistState();
-  const params = new URLSearchParams({
-    page: String(state.page),
-    page_size: String(state.pageSize),
-    sort: state.sort,
-  });
+function buildFilterParams() {
+  const params = new URLSearchParams({ sort: state.sort });
   if (state.moduleId !== null) params.set("module_id", String(state.moduleId));
   for (const status of state.statuses) params.append("status", status);
   if (state.flagged) params.set("flagged", "1");
   if (state.q) params.set("q", state.q);
+  return params;
+}
+
+async function loadCards() {
+  persistState();
+  const params = buildFilterParams();
+  params.set("page", String(state.page));
+  params.set("page_size", String(state.pageSize));
 
   listBox.replaceChildren();
   const loading = document.createElement("p");
@@ -741,6 +782,7 @@ nextButton.addEventListener("click", () => {
 mergeButton.addEventListener("click", openMergeModal);
 archiveButton.addEventListener("click", archiveSelected);
 readyButton.addEventListener("click", markSelectedReady);
+selectAllButton.addEventListener("click", selectAllFiltered);
 clearSelectionButton.addEventListener("click", () => {
   selectedIds.clear();
   persistSelection();
