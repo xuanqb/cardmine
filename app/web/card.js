@@ -47,6 +47,12 @@ let suppressEditorUntil = 0;
 
 const editorSplit = document.querySelector(".editor-split");
 
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", syncDrawerToViewport);
+  window.visualViewport.addEventListener("scroll", syncDrawerToViewport);
+}
+window.addEventListener("resize", syncDrawerToViewport);
+
 function showToast(message, isError = false) {
   toast.textContent = message;
   toast.classList.toggle("error", isError);
@@ -256,10 +262,24 @@ function activeThread() {
   return aiThreads.find((thread) => thread.id === activeThreadId) || null;
 }
 
+function syncDrawerToViewport() {
+  if (aiDrawer.hidden) return;
+  const vv = window.visualViewport;
+  if (!vv || !window.matchMedia("(max-width: 900px)").matches) {
+    aiDrawer.style.top = "";
+    aiDrawer.style.height = "";
+    return;
+  }
+  aiDrawer.style.top = `${vv.offsetTop}px`;
+  aiDrawer.style.height = `${vv.height}px`;
+  scrollChat(true);
+}
+
 function openAIDrawer() {
   aiDrawer.hidden = false;
   aiDrawerBackdrop.hidden = false;
   document.body.classList.add("drawer-open");
+  syncDrawerToViewport();
   scrollChat(true);
   aiInput.focus();
 }
@@ -267,6 +287,8 @@ function openAIDrawer() {
 function closeAIDrawer() {
   aiDrawer.hidden = true;
   aiDrawerBackdrop.hidden = true;
+  aiDrawer.style.top = "";
+  aiDrawer.style.height = "";
   document.body.classList.remove("drawer-open", "drawer-instant");
 }
 

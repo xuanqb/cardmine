@@ -1506,7 +1506,8 @@ body.drawer-open {
   flex-direction: column;
   width: min(560px, 100vw);
   height: 100vh;
-  padding: 18px 20px;
+  height: 100dvh;
+  padding: 18px 20px calc(18px + env(safe-area-inset-bottom));
   border-left: 1px solid var(--border);
   background: var(--surface);
   box-shadow: -12px 0 32px rgba(27, 31, 36, 0.16);
@@ -1918,6 +1919,20 @@ body.drawer-instant .editor-layout {
 
   .preview-pane .markdown-body {
     height: 40vh;
+  }
+
+  .ai-drawer {
+    width: 100%;
+    padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+    border-left: none;
+  }
+
+  .ai-composer textarea {
+    min-height: 56px;
+  }
+
+  .ai-composer-actions button {
+    padding: 8px 18px;
   }
 }
 
