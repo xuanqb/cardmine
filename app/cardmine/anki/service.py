@@ -1507,6 +1507,113 @@ def _unique_deck(note_decks: dict[int, str], note_id: int, fallback: str | None)
     return fallback or "Default"
 
 
+HIGH_FREQ_TOP50 = "cardmine::高频::TOP50"
+HIGH_FREQ_TOP100 = "cardmine::高频::TOP100"
+HIGH_FREQ_TAGS = (HIGH_FREQ_TOP50, HIGH_FREQ_TOP100)
+
+
+def _high_freq_desired(conn, target_id: int) -> dict[int, set[str]]:
+    """按组内 ready 卡的出现次数取 Top50/Top100，返回 note_id 到标签集合。"""
+    rows = conn.execute(
+        """
+        SELECT kp.id, kp.group_id, kp.updated_at, s.anki_note_id,
+               COUNT(me.id) AS mentions
+        FROM knowledge_point kp
+        JOIN anki_sync s
+          ON s.kp_id = kp.id AND s.target_id = ?
+         AND s.anki_note_id IS NOT NULL AND s.detached = 0
+        JOIN group_target gt
+          ON gt.group_id = kp.group_id AND gt.target_id = ?
+        LEFT JOIN mention me ON me.kp_id = kp.id
+        WHERE kp.status = 'ready'
+        GROUP BY kp.id
+        """,
+        (target_id, target_id),
+    ).fetchall()
+    grouped: dict[int, list] = {}
+    for row in rows:
+        grouped.setdefault(int(row["group_id"]), []).append(row)
+
+    desired: dict[int, set[str]] = {}
+    for group_rows in grouped.values():
+        group_rows.sort(
+            key=lambda row: (
+                int(row["mentions"] or 0),
+                row["updated_at"] or "",
+                int(row["id"]),
+            ),
+            reverse=True,
+        )
+        for rank, row in enumerate(group_rows, start=1):
+            if rank > 100:
+                break
+            tags = {HIGH_FREQ_TOP100}
+            if rank <= 50:
+                tags.add(HIGH_FREQ_TOP50)
+            desired[int(row["anki_note_id"])] = tags
+    return desired
+
+
+def _sync_high_freq_tags(
+    conn,
+    client: AnkiClient,
+    target_id: int,
+    progress: Progress | None = None,
+) -> dict:
+    """把组内高频排名同步为 Anki 标签，只增删 cardmine 自己的标签。"""
+    result = {"updated": 0, "changed": 0, "errors": []}
+    changed_notes: set[int] = set()
+    desired = _high_freq_desired(conn, target_id)
+    mapped = {
+        int(row["anki_note_id"])
+        for row in conn.execute(
+            "SELECT anki_note_id FROM anki_sync "
+            "WHERE target_id = ? AND anki_note_id IS NOT NULL",
+            (target_id,),
+        )
+    }
+    if not mapped and not desired:
+        return result
+
+    _notify(progress, "刷新高频标签", 0, 1)
+    existing: dict[str, set[int]] = {}
+    try:
+        for tag in HIGH_FREQ_TAGS:
+            ids = client.call("findNotes", query=f"tag:{tag}", timeout=30) or []
+            existing[tag] = {int(note_id) for note_id in ids} & mapped
+    except AnkiError as exc:
+        result["errors"].append(f"读取高频标签失败: {exc}")
+        _notify(progress, "刷新高频标签", 1, 1)
+        return result
+
+    for tag in HIGH_FREQ_TAGS:
+        wanted = {
+            note_id
+            for note_id, tags in desired.items()
+            if tag in tags
+        }
+        have = existing.get(tag, set())
+        add = sorted(wanted - have)
+        remove = sorted(have - wanted)
+        if add:
+            try:
+                client.call("addTags", notes=add, tags=tag, timeout=60)
+                changed_notes.update(add)
+            except AnkiError as exc:
+                result["errors"].append(f"写入标签 {tag} 失败: {exc}")
+        if remove:
+            try:
+                client.call("removeTags", notes=remove, tags=tag, timeout=60)
+                changed_notes.update(remove)
+            except AnkiError as exc:
+                result["errors"].append(f"移除标签 {tag} 失败: {exc}")
+
+    result["updated"] = len(changed_notes)
+    result["changed"] = 1 if changed_notes else 0
+    _notify(progress, "刷新高频标签", 1, 1)
+    return result
+
+
 def sync_target(
     target_id: int,
     model_name: str,
@@ -1545,6 +1652,7 @@ def sync_target(
         "imported": 0,
         "skipped_conflicts": 0,
         "flags_cleared": 0,
+        "tags_updated": 0,
         "failed": 0,
         "media_uploaded": 0,
         "backup": None,
@@ -1748,6 +1856,11 @@ def sync_target(
             errors.extend(flag_errors)
             result["changed"] += flags_cleared
 
+        tag_result = _sync_high_freq_tags(conn, client, target_id, progress)
+        result["tags_updated"] = tag_result["updated"]
+        result["changed"] += tag_result["changed"]
+        errors.extend(tag_result["errors"])
+
         if sync_enabled and result["changed"]:
             _notify(progress, "备份集合", 0, 1)
             if target["base_url"].rstrip("/") == config.ANKI_CONNECT_URL.rstrip("/"):
@@ -1782,6 +1895,7 @@ def _aggregate(results: list[dict], action: str) -> dict:
         "failed": 0,
         "archived_deleted": 0,
         "flags_cleared": 0,
+        "tags_updated": 0,
         "media_uploaded": 0,
         "errors": [],
         "targets": results,
@@ -1797,6 +1911,7 @@ def _aggregate(results: list[dict], action: str) -> dict:
             "failed",
             "archived_deleted",
             "flags_cleared",
+            "tags_updated",
             "media_uploaded",
         ):
             total[key] += item.get(key, 0)

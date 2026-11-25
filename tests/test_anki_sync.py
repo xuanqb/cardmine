@@ -125,6 +125,7 @@ class FakeClient:
             "cards": [note_id * 10],
             "deck": deck,
             "fields": {"Front": {"value": front}, "Back": {"value": back}},
+            "tags": [],
         }
         self.deck_notes.setdefault(deck, set()).add(note_id)
         return note_id
@@ -163,7 +164,28 @@ class FakeClient:
             if query.startswith('deck:"') and query.endswith('"'):
                 deck = query[6:-1]
                 return sorted(self.deck_notes.get(deck, set()))
+            if query.startswith("tag:"):
+                tag = query[4:]
+                return sorted(
+                    note_id
+                    for note_id, note in self.notes.items()
+                    if tag in note.get("tags", [])
+                )
             return []
+        if action in ("addTags", "removeTags"):
+            tags = params["tags"].split()
+            for note_id in params.get("notes", []):
+                note = self.notes.get(note_id)
+                if note is None:
+                    continue
+                current = set(note.get("tags", []))
+                for tag in tags:
+                    if action == "addTags":
+                        current.add(tag)
+                    else:
+                        current.discard(tag)
+                note["tags"] = sorted(current)
+            return None
         if action == "findCards":
             query = params.get("query", "")
             if query.startswith("nid:"):
@@ -287,6 +309,25 @@ class SyncTestCase(unittest.TestCase):
                     service.field_hash(back),
                 ),
             )
+
+    def add_mentions(self, kp_id, count=1):
+        with closing(db.connect()) as conn, conn:
+            feed_id = conn.execute(
+                "INSERT INTO feed(url, name) VALUES(?, ?)",
+                (f"https://example.com/{kp_id}.xml", f"feed-{kp_id}"),
+            ).lastrowid
+            post_id = conn.execute(
+                "INSERT INTO post(guid, feed_id, title, fetched_at) "
+                "VALUES(?, ?, ?, '2026-01-01T00:00:00+00:00')",
+                (f"post-{kp_id}", feed_id, f"post-{kp_id}"),
+            ).lastrowid
+            for seq in range(count):
+                conn.execute(
+                    "INSERT INTO mention"
+                    " (post_id, seq, raw_text, topic, created_at, kp_id)"
+                    " VALUES(?, ?, ?, 'tech', '2026-01-01T00:00:00+00:00', ?)",
+                    (post_id, seq, f"mention-{kp_id}-{seq}", kp_id),
+                )
 
     def run_sync(self, client, push=True, pull=True):
         with mock.patch.object(targets, "client_for", return_value=client):
@@ -489,6 +530,59 @@ class DetachTest(SyncTestCase):
                 (kp_id, self.target_id),
             ),
             0,
+        )
+
+
+class HighFreqTagTest(SyncTestCase):
+    def test_top50_top100_and_removal(self):
+        client = FakeClient()
+        for index in range(102):
+            kp_id = self.make_card(f"q{index}", f"a{index}")
+            self.bind(kp_id, 1000 + index, f"q{index}", f"a{index}")
+            self.add_mentions(kp_id, 1)
+            client.add_note(f"q{index}", f"a{index}", note_id=1000 + index)
+        client.notes[1000]["tags"] = ["manual"]
+
+        with closing(db.connect()) as conn:
+            result = service._sync_high_freq_tags(conn, client, self.target_id)
+
+        self.assertEqual(result["updated"], 100)
+        self.assertEqual(result["errors"], [])
+        # 前 50 名（ID 最大）同时带两个标签；第 51–100 名只带 TOP100
+        for note_id in range(1052, 1102):
+            self.assertIn(service.HIGH_FREQ_TOP50, client.notes[note_id]["tags"])
+            self.assertIn(service.HIGH_FREQ_TOP100, client.notes[note_id]["tags"])
+        for note_id in range(1002, 1052):
+            self.assertNotIn(service.HIGH_FREQ_TOP50, client.notes[note_id]["tags"])
+            self.assertIn(service.HIGH_FREQ_TOP100, client.notes[note_id]["tags"])
+        self.assertEqual(client.notes[1001]["tags"], [])
+        self.assertEqual(client.notes[1000]["tags"], ["manual"])
+
+        with closing(db.connect()) as conn, conn:
+            conn.execute(
+                "UPDATE anki_sync SET detached = 1 "
+                "WHERE target_id = ? AND anki_note_id = ?",
+                (self.target_id, 1090),
+            )
+        with closing(db.connect()) as conn:
+            second = service._sync_high_freq_tags(conn, client, self.target_id)
+        self.assertEqual(second["updated"], 3)
+        self.assertEqual(client.notes[1090]["tags"], [])
+        self.assertIn(service.HIGH_FREQ_TOP50, client.notes[1051]["tags"])
+        self.assertIn(service.HIGH_FREQ_TOP100, client.notes[1001]["tags"])
+
+    def test_sync_target_refreshes_tags(self):
+        kp_id = self.make_card("card", "back")
+        self.bind(kp_id, 10, "card", "back")
+        client = FakeClient()
+        client.add_note("card", "back", note_id=10)
+
+        result = self.run_sync(client)
+
+        self.assertEqual(result["tags_updated"], 1)
+        self.assertEqual(
+            client.notes[10]["tags"],
+            [service.HIGH_FREQ_TOP100, service.HIGH_FREQ_TOP50],
         )
 
 

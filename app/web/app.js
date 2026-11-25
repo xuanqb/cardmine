@@ -38,6 +38,7 @@ const RESULT_LABELS = {
   detached: "移出组",
   archived_deleted: "清理归档",
   flags_cleared: "清除旗帜",
+  tags_updated: "高频标签",
   conflicts: "新冲突",
   skipped_conflicts: "跳过冲突卡",
   linked: "已关联卡片",
