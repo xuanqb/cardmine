@@ -22,6 +22,10 @@ class ModelClient(AnkiClient):
         super().__init__("http://fake")
         self.models = models or {}
         self.calls = []
+        self.synced = 0
+
+    def sync_web(self, timeout=600):
+        self.synced += 1
 
     def call(self, action, timeout=60, **params):
         self.calls.append((action, params))
@@ -564,6 +568,14 @@ class ModelStyleTest(SyncTestCase):
         self.assertEqual(result["css"], True)
         self.assertEqual(self.target.models["Basic"]["css"], self.CSS)
         self.assertEqual(self.target.models["Basic"]["templates"], self.TEMPLATES)
+
+    def test_sync_style_pushes_to_ankiweb_when_enabled(self):
+        with self._clients({}):
+            result = service.sync_model_style(
+                self.friend_id, "Basic", sync_enabled=True
+            )
+        self.assertEqual(result["sync"], "ok")
+        self.assertEqual(self.target.synced, 1)
 
     def test_sync_style_rejects_same_source(self):
         with self._clients({}):

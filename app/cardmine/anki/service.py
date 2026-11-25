@@ -570,6 +570,7 @@ def sync_model_style(
     model_name: str,
     source_target_id: int | None = None,
     guard: bool = True,
+    sync_enabled: bool = False,
 ) -> dict:
     """把某个目标的 note 类型 CSS 与卡片模板复制到目标。"""
     with closing(connect()) as conn:
@@ -615,12 +616,32 @@ def sync_model_style(
             "updateModelTemplates",
             model={"name": model_name, "templates": templates},
         )
+
+    # 读回校验，避免容器不支持写入动作却返回成功
+    applied_css = (client.call("modelStyling", modelName=model_name) or {}).get("css")
+    applied_templates = client.call("modelTemplates", modelName=model_name) or {}
+    if styling.get("css") and applied_css != styling["css"]:
+        raise AnkiError(f"目标未接受模型 {model_name} 的 CSS 更新")
+    if templates and set(applied_templates) != set(templates):
+        raise AnkiError(f"目标未接受模型 {model_name} 的卡片模板更新")
+
+    sync_state = "skipped"
+    sync_error = None
+    if sync_enabled:
+        try:
+            client.sync_web()
+            sync_state = "ok"
+        except AnkiError as exc:
+            sync_state = "failed"
+            sync_error = str(exc)
     return {
         "target_id": target_id,
         "source_target_id": int(source_row["id"]),
         "source_name": source_row["name"],
         "css": bool(styling.get("css")),
         "templates": len(templates),
+        "sync": sync_state,
+        "sync_error": sync_error,
     }
 
 

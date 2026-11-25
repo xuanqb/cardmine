@@ -339,6 +339,7 @@ def copy_model_style(target_id: int, payload: ModelStyleIn | None = None) -> dic
             settings["anki_model"],
             payload.source_target_id if payload else None,
             guard=bool(settings.get("anki_conflict_guard", True)),
+            sync_enabled=bool(settings.get("anki_sync_enabled")),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -325,9 +325,17 @@ function renderTargets(items) {
               body: "{}",
             },
           );
-          showToast(
-            `已从「${result.source_name}」复制样式：${result.templates} 个模板`,
-          );
+          if (result.sync === "ok") {
+            showToast(
+              `已从「${result.source_name}」复制样式并同步到 AnkiWeb`,
+            );
+          } else if (result.sync === "failed") {
+            showToast(result.sync_error || "样式已复制，但同步 AnkiWeb 失败", true);
+          } else {
+            showToast(
+              `已从「${result.source_name}」复制样式；自动同步未开启，请在 Anki 中手动同步`,
+            );
+          }
         } catch (err) {
           showToast(err.message, true);
         }
