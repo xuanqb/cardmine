@@ -190,98 +190,112 @@
     </section>
 
     <section class="tab-panel" id="tab-sync" role="tabpanel" hidden>
-      <div class="tab-grid">
-        <section class="panel status-panel">
-          <h2>运行状态</h2>
+      <section class="panel sync-overview">
+        <div class="overview-head">
+          <div class="overview-status">
+            <div class="sync-state">
+              <span class="status-dot" id="anki-dot"></span>
+              <span id="anki-state">检测中…</span>
+            </div>
+            <p class="overview-sub" id="anki-url">—</p>
+          </div>
+          <div class="overview-actions">
+            <button type="button" class="ghost" id="anki-check">检测连接</button>
+            <button type="button" class="ghost" id="anki-takeover">接管匹配</button>
+            <button type="button" class="ghost" id="anki-push">全部推送</button>
+            <button type="button" class="ghost" id="anki-pull">全部拉取</button>
+            <button type="button" id="anki-sync">全部同步</button>
+          </div>
+        </div>
+        <div class="metric-grid">
+          <div class="metric"><span>待推送</span><strong id="anki-pending">—</strong></div>
+          <div class="metric"><span>已关联笔记</span><strong id="anki-matched">—</strong></div>
+          <div class="metric"><span>待处理冲突</span><strong id="anki-conflicts">—</strong></div>
+          <div class="metric"><span>最近推送</span><strong id="anki-last-push">—</strong></div>
+        </div>
+        <details class="overview-meta">
+          <summary>运行信息</summary>
           <dl class="status-list">
             <div><dt>应用版本</dt><dd id="app-version">—</dd></div>
             <div><dt>数据库</dt><dd id="db-status">—</dd></div>
             <div><dt>Schema 版本</dt><dd id="schema-version">—</dd></div>
-            <div><dt>Anki 容器</dt><dd id="anki-url">—</dd></div>
-          </dl>
-        </section>
-
-        <section class="panel sync-panel">
-          <h2>Anki 同步</h2>
-          <div class="sync-state">
-            <span class="status-dot" id="anki-dot"></span>
-            <span id="anki-state">检测中…</span>
-          </div>
-          <dl class="status-list">
-            <div><dt>待推送</dt><dd id="anki-pending">—</dd></div>
-            <div><dt>已匹配笔记</dt><dd id="anki-matched">—</dd></div>
-            <div><dt>待处理冲突</dt><dd id="anki-conflicts">—</dd></div>
-            <div><dt>最近推送</dt><dd id="anki-last-push">—</dd></div>
             <div><dt>最近备份</dt><dd id="anki-backup">—</dd></div>
           </dl>
-          <div class="sync-actions">
-            <button type="button" class="ghost" id="anki-check">检测连接</button>
-            <button type="button" class="ghost" id="anki-takeover">接管匹配</button>
-            <button type="button" id="anki-push">全部推送</button>
-            <button type="button" class="ghost" id="anki-pull">全部拉取</button>
-            <button type="button" class="ghost" id="anki-sync">全部同步</button>
+        </details>
+        <div class="progress-wrap" id="anki-progress" hidden>
+          <div class="progress-head">
+            <span id="anki-phase">—</span>
+            <span id="anki-count"></span>
           </div>
-          <div class="progress-wrap" id="anki-progress" hidden>
-            <div class="progress-head">
-              <span id="anki-phase">—</span>
-              <span id="anki-count"></span>
-            </div>
-            <div class="progress-bar">
-              <div class="progress-fill" id="anki-fill"></div>
-            </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="anki-fill"></div>
           </div>
-          <div class="alert" id="anki-alert" hidden></div>
-          <div class="report" id="anki-report" hidden></div>
+        </div>
+        <div class="alert" id="anki-alert" hidden></div>
+        <div class="report" id="anki-report" hidden></div>
+      </section>
 
-          <div class="targets-head">
-            <h3>同步目标</h3>
-            <button type="button" class="ghost" id="target-new">新建目标</button>
+      <section class="panel targets-panel">
+        <div class="panel-head">
+          <div>
+            <h2>同步目标</h2>
+            <p class="hint">
+              每个目标是一套独立的 AnkiWeb 账号与容器。目标之间对等双向，一个组可以同时映射到多个目标。
+            </p>
           </div>
-          <p class="hint">
-            每个目标是一套独立的 AnkiWeb 账号与容器。目标之间对等双向；组可以同时映射到多个目标。
-          </p>
-          <form class="target-form" id="target-form" hidden>
-            <label class="field">
-              <span>名称</span>
-              <input type="text" name="name" maxlength="60" required>
-            </label>
-            <label class="field">
-              <span>AnkiConnect 地址</span>
-              <input type="text" name="base_url" placeholder="http://anki-connect-friend:8765/api" required>
-            </label>
-            <label class="checkbox">
-              <input type="checkbox" name="enabled" checked>
-              <span>启用</span>
-            </label>
-            <div class="sync-actions">
-              <button type="submit" id="target-save">保存目标</button>
-              <button type="button" class="ghost" id="target-cancel">取消</button>
-              <input type="hidden" name="target_id">
-            </div>
-          </form>
-          <div class="target-list" id="target-list">
-            <p class="hint">加载中…</p>
-          </div>
-
-          <div class="targets-head">
-            <h3>组映射</h3>
-          </div>
-          <p class="hint">勾选后保存。未映射的组不会同步到任何目标。</p>
-          <div class="group-matrix" id="group-matrix"></div>
+          <button type="button" class="ghost" id="target-new">新建目标</button>
+        </div>
+        <form class="target-form" id="target-form" hidden>
+          <label class="field">
+            <span>名称</span>
+            <input type="text" name="name" maxlength="60" required>
+          </label>
+          <label class="field">
+            <span>AnkiConnect 地址</span>
+            <input type="text" name="base_url" placeholder="http://anki-connect-friend:8765/api" required>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" name="enabled" checked>
+            <span>启用</span>
+          </label>
           <div class="sync-actions">
+            <button type="submit" id="target-save">保存目标</button>
+            <button type="button" class="ghost" id="target-cancel">取消</button>
+            <input type="hidden" name="target_id">
+          </div>
+        </form>
+        <div class="target-list" id="target-list">
+          <p class="hint">加载中…</p>
+        </div>
+      </section>
+
+      <section class="panel matrix-panel">
+        <div class="panel-head">
+          <div>
+            <h2>组映射</h2>
+            <p class="hint">
+              勾选后保存。未映射的组不会同步到任何目标，组内卡片会跟随组一起切换目标。
+            </p>
+          </div>
+          <div class="matrix-actions">
             <button type="button" id="matrix-save">保存映射</button>
             <span class="save-hint" id="matrix-hint"></span>
           </div>
-        </section>
-      </div>
+        </div>
+        <div class="group-matrix" id="group-matrix"></div>
+      </section>
     </section>
 
     <section class="tab-panel" id="tab-conflicts" role="tabpanel" hidden>
       <section class="panel conflict-panel">
-        <h2>同步冲突</h2>
-        <p class="hint">
-          系统与某个目标修改了同一张卡片时不会自动覆盖。按整张卡片选择保留一侧，解决后会自动分发到所有目标。
-        </p>
+        <div class="panel-head">
+          <div>
+            <h2>同步冲突</h2>
+            <p class="hint">
+              系统与某个目标修改了同一张卡片时不会自动覆盖。按整张卡片选择保留一侧，解决后会自动分发到所有目标。
+            </p>
+          </div>
+        </div>
         <div class="conflict-list" id="conflict-list">
           <p class="hint">加载中…</p>
         </div>

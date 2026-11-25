@@ -274,13 +274,35 @@ function renderTargets(items) {
     url.className = "target-url";
     url.textContent = item.base_url;
 
-    const stats = document.createElement("p");
-    stats.className = "target-stats";
-    stats.textContent =
-      `组 ${item.group_count ?? 0} · 待推送 ${item.pending ?? 0}` +
-      ` · 已关联 ${item.linked ?? 0} · 移出 ${item.detached ?? 0}` +
-      ` · 冲突 ${item.conflicts ?? 0}` +
-      ` · 最近同步 ${formatTime(item.last_sync_at)}`;
+    const metrics = document.createElement("div");
+    metrics.className = "target-metrics";
+    const metricValues = [
+      ["组", item.group_count ?? 0],
+      ["待推送", item.pending ?? 0],
+      ["已关联", item.linked ?? 0],
+      ["冲突", item.conflicts ?? 0],
+    ];
+    for (const [label, value] of metricValues) {
+      const block = document.createElement("div");
+      block.className = "target-metric";
+      const caption = document.createElement("span");
+      caption.textContent = label;
+      const number = document.createElement("strong");
+      number.textContent = value;
+      block.append(caption, number);
+      metrics.append(block);
+    }
+
+    const foot = document.createElement("div");
+    foot.className = "target-foot";
+    const lastSync = document.createElement("span");
+    lastSync.textContent = `最近同步 ${formatTime(item.last_sync_at)}`;
+    foot.append(lastSync);
+    if (item.detached) {
+      const detached = document.createElement("span");
+      detached.textContent = `移出 ${item.detached}`;
+      foot.append(detached);
+    }
 
     const error = document.createElement("p");
     error.className = "target-error";
@@ -288,8 +310,28 @@ function renderTargets(items) {
     error.textContent = item.last_error || "";
 
     const actions = document.createElement("div");
-    actions.className = "sync-actions";
+    actions.className = "target-actions";
     actions.append(
+      smallButton("同步", () => startJob("sync", renderReport, item.id), false),
+      smallButton("推送", () => startJob("push", renderReport, item.id)),
+      smallButton("拉取", () => startJob("pull", renderReport, item.id)),
+    );
+
+    const more = document.createElement("details");
+    more.className = "target-more";
+    const moreSummary = document.createElement("summary");
+    moreSummary.textContent = "更多";
+    const menu = document.createElement("div");
+    menu.className = "more-menu";
+
+    const addMenuButton = (button) => {
+      button.addEventListener("click", () => {
+        more.open = false;
+      });
+      menu.append(button);
+    };
+
+    addMenuButton(
       smallButton("检测", async () => {
         try {
           const status = await fetchJSON(`/api/anki/targets/${item.id}/status`);
@@ -303,11 +345,14 @@ function renderTargets(items) {
           badge.classList.add("error");
         }
       }),
-      smallButton("推送", () => startJob("push", renderReport, item.id)),
-      smallButton("拉取", () => startJob("pull", renderReport, item.id)),
-      smallButton("同步", () => startJob("sync", renderReport, item.id)),
-      smallButton("接管", () => startJob("takeover", renderReport, item.id)),
+    );
+    addMenuButton(
+      smallButton("接管匹配", () => startJob("takeover", renderReport, item.id)),
+    );
+    addMenuButton(
       smallButton("体检", () => startJob("audit", renderAudit, item.id)),
+    );
+    addMenuButton(
       smallButton("同步样式", async () => {
         if (
           !window.confirm(
@@ -351,35 +396,56 @@ function renderTargets(items) {
           showToast(err.message, true);
         }
       }),
-      smallButton("编辑", () => openTargetForm(item)),
-      smallButton(
-        "删除",
-        async () => {
-          if (
-            !window.confirm(
-              `删除同步目标「${item.name}」？不会删除 Anki 里的卡片，只停止 cardmine 的同步。`,
-            )
-          ) {
-            return;
-          }
-          try {
-            await fetchJSON(`/api/anki/targets/${item.id}`, {
-              method: "DELETE",
-            });
-            showToast("目标已删除");
-            await loadTargets();
-            loadAnkiStatus();
-          } catch (err) {
-            showToast(err.message || "删除失败", true);
-          }
-        },
-        false,
-      ),
     );
+    addMenuButton(smallButton("编辑", () => openTargetForm(item)));
 
-    card.append(head, url, stats, error, actions);
+    const remove = smallButton(
+      "删除",
+      async () => {
+        if (
+          !window.confirm(
+            `删除同步目标「${item.name}」？不会删除 Anki 里的卡片，只停止 cardmine 的同步。`,
+          )
+        ) {
+          return;
+        }
+        try {
+          await fetchJSON(`/api/anki/targets/${item.id}`, {
+            method: "DELETE",
+          });
+          showToast("目标已删除");
+          await loadTargets();
+          loadAnkiStatus();
+        } catch (err) {
+          showToast(err.message || "删除失败", true);
+        }
+      },
+      false,
+    );
+    remove.className = "danger";
+    addMenuButton(remove);
+
+    more.append(moreSummary, menu);
+    actions.append(more);
+
+    card.append(head, url, metrics, foot, error, actions);
     targetList.append(card);
   }
+}
+
+function refreshMatrixColumn(table, headRow, targetId) {
+  const boxes = Array.from(
+    table.querySelectorAll(
+      `input[data-group-id][data-target-id="${targetId}"]`,
+    ),
+  );
+  const all = headRow.querySelector(
+    `input.matrix-all[data-target-id="${targetId}"]`,
+  );
+  if (!all) return;
+  const checked = boxes.filter((box) => box.checked).length;
+  all.checked = boxes.length > 0 && checked === boxes.length;
+  all.indeterminate = checked > 0 && checked < boxes.length;
 }
 
 function renderMatrix(data) {
@@ -401,10 +467,30 @@ function renderMatrix(data) {
   table.className = "matrix-table";
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  headRow.append(document.createElement("th"));
+  const corner = document.createElement("th");
+  corner.textContent = "组";
+  headRow.append(corner);
   for (const target of items) {
     const th = document.createElement("th");
-    th.textContent = target.name;
+    const label = document.createElement("span");
+    label.textContent = target.name;
+    const all = document.createElement("input");
+    all.type = "checkbox";
+    all.className = "matrix-all";
+    all.dataset.targetId = String(target.id);
+    all.title = `全选「${target.name}」`;
+    all.setAttribute("aria-label", `全选「${target.name}」`);
+    all.addEventListener("change", () => {
+      const boxes = table.querySelectorAll(
+        `input[data-group-id][data-target-id="${target.id}"]`,
+      );
+      for (const box of boxes) {
+        box.checked = all.checked;
+        box.closest("td").classList.toggle("checked", box.checked);
+      }
+      refreshMatrixColumn(table, headRow, target.id);
+    });
+    th.append(label, all);
     headRow.append(th);
   }
   thead.append(headRow);
@@ -423,6 +509,11 @@ function renderMatrix(data) {
       box.checked = (target.group_ids || []).includes(group.id);
       box.dataset.groupId = String(group.id);
       box.dataset.targetId = String(target.id);
+      cell.classList.toggle("checked", box.checked);
+      box.addEventListener("change", () => {
+        cell.classList.toggle("checked", box.checked);
+        refreshMatrixColumn(table, headRow, target.id);
+      });
       cell.append(box);
       row.append(cell);
     }
@@ -430,6 +521,9 @@ function renderMatrix(data) {
   }
   table.append(tbody);
   groupMatrix.append(table);
+  for (const target of items) {
+    refreshMatrixColumn(table, headRow, target.id);
+  }
 }
 
 async function loadTargets() {
@@ -487,7 +581,9 @@ document.getElementById("target-cancel").addEventListener("click", () => {
 });
 
 document.getElementById("matrix-save").addEventListener("click", async () => {
-  const boxes = Array.from(groupMatrix.querySelectorAll("input[type=checkbox]"));
+  const boxes = Array.from(
+    groupMatrix.querySelectorAll("input[type=checkbox][data-group-id]"),
+  );
   const byTarget = new Map();
   for (const box of boxes) {
     const targetId = Number(box.dataset.targetId);
