@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "app"))
 
 from cardmine import config, db  # noqa: E402
 from cardmine.anki import service, targets  # noqa: E402
-from cardmine.anki.client import AnkiClient  # noqa: E402
+from cardmine.anki.client import AnkiClient, AnkiError  # noqa: E402
 from cardmine.importer.textfmt import normalize_front  # noqa: E402
 
 
@@ -57,11 +57,28 @@ class ModelClient(AnkiClient):
             ]
             return None
         if action == "modelTemplateAdd":
+            templates = self.models[params["modelName"]]["templates"]
             template = params["template"]
-            self.models[params["modelName"]]["templates"][template["Name"]] = {
+            for other_name, other in templates.items():
+                if (
+                    other_name != template["Name"]
+                    and (other.get("Front") or "").strip()
+                    == template["Front"].strip()
+                ):
+                    raise AnkiError(
+                        f"Card template {template['Name']} in note type "
+                        f"'{params['modelName']}' has a problem. "
+                        f"The front side is identical to card template {other_name}."
+                    )
+            templates[template["Name"]] = {
                 "Front": template["Front"],
                 "Back": template["Back"],
             }
+            return None
+        if action == "modelTemplateRemove":
+            self.models[params["modelName"]]["templates"].pop(
+                params["templateName"], None
+            )
             return None
         raise AssertionError(f"未预期的动作：{action}")
 
@@ -530,9 +547,14 @@ class ModelStyleTest(SyncTestCase):
                 "'2026-01-01T00:00:00+00:00')"
             ).lastrowid
 
-    def _clients(self, target_models):
+    def _clients(self, target_models, source_templates=None):
         self.source = ModelClient(
-            {"Basic": {"css": self.CSS, "templates": self.TEMPLATES}}
+            {
+                "Basic": {
+                    "css": self.CSS,
+                    "templates": source_templates or self.TEMPLATES,
+                }
+            }
         )
         self.target = ModelClient(target_models)
         clients = {self.target_id: self.source, self.friend_id: self.target}
@@ -592,6 +614,52 @@ class ModelStyleTest(SyncTestCase):
         actions = [action for action, _ in self.target.calls]
         self.assertIn("modelTemplateAdd", actions)
         self.assertNotIn("updateModelTemplates", actions)
+
+    def test_sync_style_repairs_duplicate_templates(self):
+        target_models = {
+            "Basic": {
+                "css": ".card { color: black; }",
+                "templates": {
+                    "Card 1": {
+                        "Front": "{{Back}}",
+                        "Back": "{{FrontSide}}",
+                    },
+                    "Card 2": {
+                        "Front": "{{Back}}",
+                        "Back": "{{FrontSide}}",
+                    },
+                },
+            }
+        }
+        with self._clients(target_models):
+            service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(self.target.models["Basic"]["templates"], self.TEMPLATES)
+
+    def test_sync_style_removes_extra_template(self):
+        source_templates = {"Card 1": self.TEMPLATES["Card 1"]}
+        target_models = {
+            "Basic": {
+                "css": ".card { color: black; }",
+                "templates": {
+                    "Card 1": {"Front": "{{Front}}", "Back": "{{FrontSide}}"},
+                    "Card 2": {"Front": "{{Front}}", "Back": "{{FrontSide}}"},
+                },
+            }
+        }
+        with self._clients(target_models, source_templates=source_templates):
+            service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(
+            self.target.models["Basic"]["templates"], source_templates
+        )
+
+    def test_sync_style_rejects_duplicate_source(self):
+        duplicate = {
+            "Card 1": {"Front": "{{Front}}", "Back": ""},
+            "Card 2": {"Front": "{{Front}}", "Back": ""},
+        }
+        with self._clients({}, source_templates=duplicate):
+            with self.assertRaises(AnkiError):
+                service.sync_model_style(self.friend_id, "Basic")
 
     def test_sync_style_pushes_to_ankiweb_when_enabled(self):
         with self._clients({}):

@@ -565,6 +565,52 @@ def _first_model_client(
     return None
 
 
+def _repair_target_templates(
+    client: AnkiClient, model_name: str, source_templates: dict
+) -> None:
+    """修复目标模型里重复的卡片模板，并移除源中不存在的模板。
+
+    部分容器（anki-connect-server 0.5）的 updateModelTemplates 会把同一份内容
+    写到所有模板，导致多个模板正面完全相同；此后任何保存都会被 Anki 拒绝。
+    这里先把重复模板改成互不相同的临时正面，再删除源中不存在的模板。
+    """
+    current = client.call("modelTemplates", modelName=model_name) or {}
+    groups: dict[str, list[str]] = {}
+    for name, body in current.items():
+        groups.setdefault((body.get("Front") or "").strip(), []).append(name)
+    duplicated = {
+        name for names in groups.values() if len(names) > 1 for name in names
+    }
+    for group_index, names in enumerate(groups.values()):
+        if len(names) < 2:
+            continue
+        for name_index, name in enumerate(names):
+            client.call(
+                "modelTemplateAdd",
+                timeout=60,
+                modelName=model_name,
+                template={
+                    "Name": name,
+                    "Front": f"{{{{Front}}}}<!--cardmine-repair-{group_index}-{name_index}-->",
+                    "Back": (current[name].get("Back") or ""),
+                },
+            )
+    source_fronts = {
+        (body.get("Front") or "").strip() for body in source_templates.values()
+    }
+    for name, body in list(current.items()):
+        if name in source_templates:
+            continue
+        # 只清理会与现有模板或源模板正面冲突的多余模板，保留用户自定义的独立模板
+        if name in duplicated or (body.get("Front") or "").strip() in source_fronts:
+            client.call(
+                "modelTemplateRemove",
+                timeout=60,
+                modelName=model_name,
+                templateName=name,
+            )
+
+
 def _apply_model_templates(
     client: AnkiClient, model_name: str, templates: dict
 ) -> None:
@@ -634,15 +680,31 @@ def sync_model_style(
     templates = source.call("modelTemplates", modelName=model_name) or {}
     if not styling.get("css") and not templates:
         raise AnkiError(f"源目标模型 {model_name} 没有可复制的样式")
+    fronts = [(body.get("Front") or "").strip() for body in templates.values()]
+    if len(set(fronts)) != len(fronts):
+        raise AnkiError(
+            f"源目标模型 {model_name} 的卡片模板正面重复，请先在源目标修复"
+        )
 
     client = targets.client_for(target, guard)
     client.ensure_model(model_name, source=source)
+    if templates:
+        _repair_target_templates(client, model_name, templates)
+        current_templates = (
+            client.call("modelTemplates", modelName=model_name) or {}
+        )
+        pending = {
+            name: body
+            for name, body in templates.items()
+            if (current_templates.get(name) or {}).get("Front") != body.get("Front")
+            or (current_templates.get(name) or {}).get("Back") != body.get("Back")
+        }
+        if pending:
+            _apply_model_templates(client, model_name, pending)
     client.call(
         "updateModelStyling",
         model={"name": model_name, "css": styling.get("css") or ""},
     )
-    if templates:
-        _apply_model_templates(client, model_name, templates)
 
     # 读回校验，避免容器不支持写入动作却返回成功
     applied_css = (client.call("modelStyling", modelName=model_name) or {}).get("css")
