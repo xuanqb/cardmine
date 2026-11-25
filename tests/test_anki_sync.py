@@ -56,6 +56,13 @@ class ModelClient(AnkiClient):
                 "templates"
             ]
             return None
+        if action == "modelTemplateAdd":
+            template = params["template"]
+            self.models[params["modelName"]]["templates"][template["Name"]] = {
+                "Front": template["Front"],
+                "Back": template["Back"],
+            }
+            return None
         raise AssertionError(f"未预期的动作：{action}")
 
 
@@ -568,6 +575,23 @@ class ModelStyleTest(SyncTestCase):
         self.assertEqual(result["css"], True)
         self.assertEqual(self.target.models["Basic"]["css"], self.CSS)
         self.assertEqual(self.target.models["Basic"]["templates"], self.TEMPLATES)
+
+    def test_sync_style_adds_missing_template_by_name(self):
+        target_models = {
+            "Basic": {
+                "css": ".card { color: black; }",
+                "templates": {
+                    "Card 1": {"Front": "{{Front}}", "Back": "{{FrontSide}}"}
+                },
+            }
+        }
+        with self._clients(target_models):
+            result = service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(result["templates"], 2)
+        self.assertEqual(self.target.models["Basic"]["templates"], self.TEMPLATES)
+        actions = [action for action, _ in self.target.calls]
+        self.assertIn("modelTemplateAdd", actions)
+        self.assertNotIn("updateModelTemplates", actions)
 
     def test_sync_style_pushes_to_ankiweb_when_enabled(self):
         with self._clients({}):

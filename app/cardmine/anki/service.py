@@ -565,6 +565,36 @@ def _first_model_client(
     return None
 
 
+def _apply_model_templates(
+    client: AnkiClient, model_name: str, templates: dict
+) -> None:
+    """按模板名逐个更新，避开部分容器忽略模板名、批量覆盖所有模板的问题。"""
+    for name, body in templates.items():
+        try:
+            client.call(
+                "modelTemplateAdd",
+                timeout=60,
+                modelName=model_name,
+                template={
+                    "Name": name,
+                    "Front": body.get("Front", ""),
+                    "Back": body.get("Back", ""),
+                },
+            )
+        except AnkiError as exc:
+            message = str(exc).lower()
+            if not any(
+                word in message
+                for word in ("unsupported", "unknown action", "was not found")
+            ):
+                raise
+            client.call(
+                "updateModelTemplates",
+                model={"name": model_name, "templates": templates},
+            )
+            return
+
+
 def sync_model_style(
     target_id: int,
     model_name: str,
@@ -612,18 +642,21 @@ def sync_model_style(
         model={"name": model_name, "css": styling.get("css") or ""},
     )
     if templates:
-        client.call(
-            "updateModelTemplates",
-            model={"name": model_name, "templates": templates},
-        )
+        _apply_model_templates(client, model_name, templates)
 
     # 读回校验，避免容器不支持写入动作却返回成功
     applied_css = (client.call("modelStyling", modelName=model_name) or {}).get("css")
     applied_templates = client.call("modelTemplates", modelName=model_name) or {}
-    if styling.get("css") and applied_css != styling["css"]:
+    if styling.get("css") and (applied_css or "").strip() != styling["css"].strip():
         raise AnkiError(f"目标未接受模型 {model_name} 的 CSS 更新")
-    if templates and set(applied_templates) != set(templates):
-        raise AnkiError(f"目标未接受模型 {model_name} 的卡片模板更新")
+    for name, body in templates.items():
+        current = applied_templates.get(name)
+        if current is None:
+            raise AnkiError(f"目标缺少卡片模板 {name}")
+        if (current.get("Front") or "").strip() != (body.get("Front") or "").strip() or (
+            current.get("Back") or ""
+        ).strip() != (body.get("Back") or "").strip():
+            raise AnkiError(f"目标未接受卡片模板 {name} 的更新")
 
     sync_state = "skipped"
     sync_error = None
