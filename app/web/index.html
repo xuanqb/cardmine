@@ -167,10 +167,6 @@
         <fieldset>
           <legend>Anki</legend>
           <label class="field">
-            <span>容器地址</span>
-            <input type="text" name="anki_url" autocomplete="off">
-          </label>
-          <label class="field">
             <span>模型名</span>
             <input type="text" name="anki_model" autocomplete="off">
           </label>
@@ -221,9 +217,9 @@
           <div class="sync-actions">
             <button type="button" class="ghost" id="anki-check">检测连接</button>
             <button type="button" class="ghost" id="anki-takeover">接管匹配</button>
-            <button type="button" id="anki-push">立即推送</button>
-            <button type="button" class="ghost" id="anki-pull">从 Anki 拉取</button>
-            <button type="button" class="ghost" id="anki-sync">同步 AnkiWeb</button>
+            <button type="button" id="anki-push">全部推送</button>
+            <button type="button" class="ghost" id="anki-pull">全部拉取</button>
+            <button type="button" class="ghost" id="anki-sync">全部同步</button>
           </div>
           <div class="progress-wrap" id="anki-progress" hidden>
             <div class="progress-head">
@@ -236,6 +232,46 @@
           </div>
           <div class="alert" id="anki-alert" hidden></div>
           <div class="report" id="anki-report" hidden></div>
+
+          <div class="targets-head">
+            <h3>同步目标</h3>
+            <button type="button" class="ghost" id="target-new">新建目标</button>
+          </div>
+          <p class="hint">
+            每个目标是一套独立的 AnkiWeb 账号与容器。目标之间对等双向；组可以同时映射到多个目标。
+          </p>
+          <form class="target-form" id="target-form" hidden>
+            <label class="field">
+              <span>名称</span>
+              <input type="text" name="name" maxlength="60" required>
+            </label>
+            <label class="field">
+              <span>AnkiConnect 地址</span>
+              <input type="text" name="base_url" placeholder="http://anki-connect-friend:8765/api" required>
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="enabled" checked>
+              <span>启用</span>
+            </label>
+            <div class="sync-actions">
+              <button type="submit" id="target-save">保存目标</button>
+              <button type="button" class="ghost" id="target-cancel">取消</button>
+              <input type="hidden" name="target_id">
+            </div>
+          </form>
+          <div class="target-list" id="target-list">
+            <p class="hint">加载中…</p>
+          </div>
+
+          <div class="targets-head">
+            <h3>组映射</h3>
+          </div>
+          <p class="hint">勾选后保存。未映射的组不会同步到任何目标。</p>
+          <div class="group-matrix" id="group-matrix"></div>
+          <div class="sync-actions">
+            <button type="button" id="matrix-save">保存映射</button>
+            <span class="save-hint" id="matrix-hint"></span>
+          </div>
         </section>
       </div>
     </section>
@@ -244,7 +280,7 @@
       <section class="panel conflict-panel">
         <h2>同步冲突</h2>
         <p class="hint">
-          系统与 Anki 修改了同一字段时不会自动覆盖。选择保留一侧，或先打开卡片手动编辑，再回来选择「用系统」。
+          系统与某个目标修改了同一张卡片时不会自动覆盖。按整张卡片选择保留一侧，解决后会自动分发到所有目标。
         </p>
         <div class="conflict-list" id="conflict-list">
           <p class="hint">加载中…</p>

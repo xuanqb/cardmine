@@ -539,6 +539,10 @@ async function loadModules() {
   }
 }
 
+function cardNoteLinks(card) {
+  return (card.anki_links || []).filter((link) => link.anki_note_id);
+}
+
 function renderMergeChoices() {
   mergeCardList.replaceChildren();
   for (const card of mergeDetails) {
@@ -564,10 +568,14 @@ function renderMergeChoices() {
     const meta = document.createElement("div");
     meta.className = "merge-choice-meta";
     const status = window.cm.statusMeta(card.status);
+    const notes = cardNoteLinks(card).map(
+      (link) =>
+        `${link.target_name || `目标 ${link.target_id}`} note ${link.anki_note_id}`,
+    );
     meta.textContent = [
       card.module_path ? card.module_path.replaceAll("/", " / ") : "未分类",
       status.label,
-      card.anki_note_id ? `Anki note ${card.anki_note_id}` : "无 Anki note",
+      notes.length ? notes.join(" · ") : "无 Anki note",
     ].join(" · ");
 
     body.append(front, meta);
@@ -579,7 +587,7 @@ function renderMergeChoices() {
 function renderMergeOptions() {
   mergeOptions.replaceChildren();
   deleteUnclaimedNotes = false;
-  if (!mergeDetails.some((card) => card.anki_note_id)) return;
+  if (!mergeDetails.some((card) => cardNoteLinks(card).length)) return;
 
   const label = document.createElement("label");
   label.className = "merge-option";
@@ -599,16 +607,25 @@ function renderMergeOptions() {
 
 function renderMergeWarnings() {
   const modules = new Set(mergeDetails.map((card) => card.module_path || ""));
-  const notes = mergeDetails.filter((card) => card.anki_note_id);
+  const notesByTarget = new Map();
+  for (const card of mergeDetails) {
+    for (const link of cardNoteLinks(card)) {
+      const key = link.target_name || `目标 ${link.target_id}`;
+      notesByTarget.set(key, (notesByTarget.get(key) || 0) + 1);
+    }
+  }
   const warnings = [
     "合并后保留卡会回到草稿状态，请确认背面或手动生成 AI 答案后再同步。",
   ];
   if (modules.size > 1) {
     warnings.push("所选卡片来自多个模块，合并后保留卡仍留在原模块。");
   }
-  if (notes.length > 0) {
+  if (notesByTarget.size > 0) {
+    const detail = [...notesByTarget]
+      .map(([name, count]) => `${name} ${count} 个`)
+      .join("、");
     warnings.push(
-      `共 ${notes.length} 张卡已关联 Anki note，合并后最多接管 1 个；其余 note 默认不会在 Anki 中自动删除，请手动处理。`,
+      `已关联 Anki note：${detail}。每个目标最多接管 1 个；其余 note 默认不会在 Anki 中自动删除，请手动处理。`,
     );
   }
 

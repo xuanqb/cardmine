@@ -1,24 +1,28 @@
 from .client import AnkiClient, AnkiError
 from .service import (
-    audit,
+    audit_target,
     list_conflicts,
-    pull,
-    push,
+    pull_target,
+    push_targets,
     resolve_conflict,
-    sync_anki,
-    takeover,
+    summary,
+    sync_all_targets,
+    sync_target,
+    takeover_target,
     undo_conflict,
 )
 
 __all__ = [
     "AnkiClient",
     "AnkiError",
-    "audit",
+    "audit_target",
     "list_conflicts",
-    "pull",
-    "push",
+    "pull_target",
+    "push_targets",
     "resolve_conflict",
-    "sync_anki",
-    "takeover",
+    "summary",
+    "sync_all_targets",
+    "sync_target",
+    "takeover_target",
     "undo_conflict",
 ]

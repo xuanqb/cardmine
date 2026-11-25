@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 
 from .. import config
-from ..anki import AnkiClient, AnkiError
+from ..anki import AnkiClient, AnkiError, targets
 from ..anki.service import summary as anki_summary
 from ..collect import is_running
 from ..db import connect
@@ -45,21 +45,27 @@ def _anki_status(settings: dict) -> dict:
     if cached is not None and now - _anki_cache["at"] < _ANKI_TTL:
         return cached
 
-    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
+    with closing(connect()) as conn:
+        rows = targets.list_targets(conn, enabled_only=True)
     status = {
-        "url": client.url,
+        "url": rows[0]["base_url"] if rows else None,
         "model": settings["anki_model"],
         "connected": False,
         "version": None,
-        "error": None,
+        "error": "未配置启用的同步目标" if not rows else None,
     }
-    try:
-        info = client.validate(settings["anki_model"], timeout=2)
-        status.update(
-            connected=True, version=info["version"], model=info["model"]
+    if rows:
+        client = AnkiClient(
+            rows[0]["base_url"],
+            conflict_guard=bool(settings.get("anki_conflict_guard", True)),
         )
-    except (AnkiError, OSError, ValueError) as exc:
-        status["error"] = str(exc)
+        try:
+            info = client.validate(settings["anki_model"], timeout=2)
+            status.update(
+                connected=True, version=info["version"], model=info["model"]
+            )
+        except (AnkiError, OSError, ValueError) as exc:
+            status["error"] = str(exc)
 
     _anki_cache["at"] = now
     _anki_cache["value"] = status
@@ -292,7 +298,7 @@ def dashboard() -> dict:
                 "SELECT COUNT(*) AS value FROM anki_sync WHERE last_error IS NOT NULL"
             ).fetchone()["value"],
             "conflicts": conn.execute(
-                "SELECT COUNT(*) AS value FROM anki_conflict WHERE status = 'pending'"
+                "SELECT COUNT(*) AS value FROM sync_conflict WHERE status = 'pending'"
             ).fetchone()["value"],
             "failed_items": [
                 dict(row)

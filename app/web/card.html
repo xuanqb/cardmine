@@ -51,12 +51,9 @@
         <select id="module-select"></select>
       </div>
 
-      <div class="field" id="flag-field" hidden>
-        <span>Anki 旗帜</span>
-        <div class="flag-actions">
-          <span class="badge" id="flag-badge">—</span>
-          <button type="button" class="ghost" id="flag-clear">清除旗帜</button>
-        </div>
+      <div class="field" id="anki-links-field" hidden>
+        <span>Anki 同步</span>
+        <ul class="alias-list" id="anki-link-list"></ul>
       </div>
 
       <dl class="status-list card-facts">
@@ -85,7 +82,7 @@
       <section class="info-section" id="conflict-section" hidden>
         <h3>同步冲突</h3>
         <p class="muted alias-hint">
-          以下字段在系统与 Anki 都被修改，未自动覆盖。请前往
+          以下整卡在系统与目标都被修改，未自动覆盖。请前往
           <a href="/settings">设置页</a> 选择保留哪一侧。
         </p>
         <ul class="conflict-card-list" id="conflict-card-list"></ul>

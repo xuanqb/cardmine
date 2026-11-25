@@ -4,11 +4,10 @@ from contextlib import closing
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .. import aliases, config, groups, review
+from .. import aliases, groups, review
 from ..anki.client import AnkiClient, AnkiError
 from ..db import connect, utc_now
 from ..importer.textfmt import normalize_front
-from .settings import load_settings
 
 router = APIRouter(prefix="/api", tags=["cards"])
 
@@ -85,7 +84,7 @@ def list_cards(
 
         total = conn.execute(
             f"""
-            SELECT COUNT(*) FROM knowledge_point kp
+            SELECT COUNT(DISTINCT kp.id) FROM knowledge_point kp
             LEFT JOIN anki_sync s ON s.kp_id = kp.id
             {clause}
             """,
@@ -105,7 +104,11 @@ def list_cards(
                        AS last_mention_at
             FROM knowledge_point kp
             LEFT JOIN module m ON m.id = kp.module_id
-            LEFT JOIN anki_sync s ON s.kp_id = kp.id
+            LEFT JOIN (
+                SELECT kp_id, MAX(anki_flag) AS anki_flag,
+                       MAX(flag_clear_pending) AS flag_clear_pending
+                FROM anki_sync GROUP BY kp_id
+            ) s ON s.kp_id = kp.id
             {clause}
             ORDER BY {SORTS[sort]}
             LIMIT ? OFFSET ?
@@ -129,7 +132,11 @@ def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
                COALESCE(s.flag_clear_pending, 0) AS flag_clear_pending
         FROM knowledge_point kp
         LEFT JOIN module m ON m.id = kp.module_id
-        LEFT JOIN anki_sync s ON s.kp_id = kp.id
+        LEFT JOIN (
+            SELECT kp_id, MAX(anki_flag) AS anki_flag,
+                   MAX(flag_clear_pending) AS flag_clear_pending
+            FROM anki_sync GROUP BY kp_id
+        ) s ON s.kp_id = kp.id
         WHERE kp.id = ?
         """,
         (card_id,),
@@ -172,14 +179,33 @@ def _fetch_detail(conn: sqlite3.Connection, card_id: int) -> dict:
     detail["variants"] = [dict(item) for item in variants]
     detail["sources"] = [dict(item) for item in sources]
     detail["aliases"] = aliases.list_for_survivor(conn, card_id)
+    detail["anki_links"] = [
+        dict(item)
+        for item in conn.execute(
+            """
+            SELECT s.target_id, t.name AS target_name, s.anki_note_id,
+                   s.detached, s.anki_flag, s.flag_clear_pending, s.pushed_at,
+                   s.last_error
+            FROM anki_sync s
+            LEFT JOIN anki_target t ON t.id = s.target_id
+            WHERE s.kp_id = ?
+            ORDER BY t.sort, t.id
+            """,
+            (card_id,),
+        )
+    ]
     detail["conflicts"] = [
         dict(item)
         for item in conn.execute(
             """
-            SELECT id, field, note, system_value, anki_value, created_at
-            FROM anki_conflict
-            WHERE kp_id = ? AND status = 'pending'
-            ORDER BY id
+            SELECT c.id, c.kind, c.note, c.target_id, t.name AS target_name,
+                   c.system_front, c.system_back, c.system_deck,
+                   c.target_front, c.target_back, c.target_deck,
+                   c.status, c.resolution, c.created_at
+            FROM sync_conflict c
+            LEFT JOIN anki_target t ON t.id = c.target_id
+            WHERE c.kp_id = ? AND c.status = 'pending'
+            ORDER BY c.id
             """,
             (card_id,),
         )
@@ -194,30 +220,39 @@ def get_card(card_id: int) -> dict:
 
 
 @router.post("/cards/{card_id}/flag/clear")
-def clear_anki_flag(card_id: int) -> dict:
-    """登记清除 Anki 旗帜；真正的清除在下一次推送时执行。"""
+def clear_anki_flag(card_id: int, target_id: int | None = None) -> dict:
+    """登记清除 Anki 旗帜；真正的清除在下一次推送时按目标执行。"""
     with closing(connect()) as conn, conn:
-        row = conn.execute(
-            """
-            SELECT COALESCE(s.anki_flag, 0) AS anki_flag
-            FROM knowledge_point kp
-            LEFT JOIN anki_sync s ON s.kp_id = kp.id
-            WHERE kp.id = ?
-            """,
-            (card_id,),
+        exists = conn.execute(
+            "SELECT 1 FROM knowledge_point WHERE id = ?", (card_id,)
         ).fetchone()
-        if row is None:
+        if exists is None:
             raise HTTPException(status_code=404, detail="卡片不存在")
-        if not row["anki_flag"]:
+        if target_id is not None:
+            rows = conn.execute(
+                "SELECT kp_id, target_id, COALESCE(anki_flag, 0) AS anki_flag "
+                "FROM anki_sync WHERE kp_id = ? AND target_id = ?",
+                (card_id, target_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT kp_id, target_id, COALESCE(anki_flag, 0) AS anki_flag "
+                "FROM anki_sync WHERE kp_id = ? AND COALESCE(anki_flag, 0) > 0",
+                (card_id,),
+            ).fetchall()
+        pending = [row for row in rows if row["anki_flag"]]
+        if not pending:
             raise HTTPException(
                 status_code=400, detail="这张卡没有从 Anki 同步到旗帜"
             )
-        conn.execute(
-            "INSERT INTO anki_sync(kp_id, flag_clear_pending) VALUES(?, ?) "
-            "ON CONFLICT(kp_id) DO UPDATE SET "
-            "flag_clear_pending = excluded.flag_clear_pending",
-            (card_id, row["anki_flag"]),
-        )
+        for row in pending:
+            conn.execute(
+                "INSERT INTO anki_sync(kp_id, target_id, flag_clear_pending) "
+                "VALUES(?, ?, ?) "
+                "ON CONFLICT(kp_id, target_id) DO UPDATE SET "
+                "flag_clear_pending = excluded.flag_clear_pending",
+                (row["kp_id"], row["target_id"], row["anki_flag"]),
+            )
         return _fetch_detail(conn, card_id)
 
 
@@ -239,16 +274,21 @@ class CardMerge(BaseModel):
     delete_unclaimed_notes: bool = False
 
 
-def _delete_notes(note_ids: list[int]) -> tuple[list[int], list[str]]:
+def _delete_notes(target_id: int, note_ids: list[int]) -> tuple[list[int], list[str]]:
     if not note_ids:
         return [], []
-    settings = load_settings()
-    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
+    with closing(connect()) as conn:
+        target = conn.execute(
+            "SELECT * FROM anki_target WHERE id = ?", (target_id,)
+        ).fetchone()
+    if target is None:
+        return [], [f"同步目标 {target_id} 不存在"]
+    client = AnkiClient(target["base_url"])
     try:
         client.call("deleteNotes", timeout=15, notes=note_ids)
     except AnkiError as exc:
         joined = ", ".join(str(item) for item in note_ids)
-        return [], [f"note {joined}: {exc}"]
+        return [], [f"目标 {target['name']} note {joined}: {exc}"]
     return note_ids, []
 
 
@@ -262,14 +302,18 @@ def merge_cards(payload: CardMerge) -> dict:
     result["deleted_notes"] = []
     result["note_delete_errors"] = []
     if payload.delete_unclaimed_notes and result["unclaimed_notes"]:
-        note_ids = [
-            item["note_id"]
-            for item in result["unclaimed_notes"]
-            if item["note_id"] != result["anki_note_id"]
-        ]
-        deleted, errors = _delete_notes(note_ids)
-        result["deleted_notes"] = deleted
-        result["note_delete_errors"] = errors
+        survivor_notes = result.get("survivor_note_ids", {})
+        by_target: dict[int, list[int]] = {}
+        for item in result["unclaimed_notes"]:
+            target_id = int(item["target_id"])
+            note_id = int(item["note_id"])
+            if survivor_notes.get(target_id) == note_id:
+                continue
+            by_target.setdefault(target_id, []).append(note_id)
+        for target_id, note_ids in by_target.items():
+            deleted, errors = _delete_notes(target_id, note_ids)
+            result["deleted_notes"].extend(deleted)
+            result["note_delete_errors"].extend(errors)
 
     with closing(connect()) as conn:
         result["card"] = _fetch_detail(conn, payload.survivor_id)
@@ -290,9 +334,10 @@ def archive_cards(payload: CardArchive) -> dict:
         rows = conn.execute(
             f"""
             SELECT kp.id, kp.status,
-                   COALESCE(kp.anki_note_id, s.anki_note_id) AS note_id
+                   (SELECT COUNT(*) FROM anki_sync s
+                    WHERE s.kp_id = kp.id AND s.anki_note_id IS NOT NULL)
+                       AS note_count
             FROM knowledge_point kp
-            LEFT JOIN anki_sync s ON s.kp_id = kp.id
             WHERE kp.id IN ({placeholders})
             """,
             ids,
@@ -318,7 +363,7 @@ def archive_cards(payload: CardArchive) -> dict:
                 "skipped": len(skipped),
                 "failed": len(missing),
                 "linked_notes": sum(
-                    1 for card_id in to_archive if found[card_id]["note_id"]
+                    1 for card_id in to_archive if found[card_id]["note_count"]
                 ),
             }
 

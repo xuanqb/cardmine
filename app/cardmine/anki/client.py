@@ -11,9 +11,21 @@ READ_ACTIONS = {
     "modelFieldNames",
     "deckNames",
     "findNotes",
+    "findCards",
+    "cardsInfo",
     "notesInfo",
+    "cardsToNotes",
     "retrieveMediaFile",
 }
+
+MODEL_CSS = """.card {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 18px;
+  text-align: left;
+  color: #1f2328;
+  background: #ffffff;
+}
+"""
 
 
 class AnkiError(Exception):
@@ -25,8 +37,9 @@ class AnkiTransientError(AnkiError):
 
 
 class AnkiClient:
-    def __init__(self, url: str):
+    def __init__(self, url: str, conflict_guard: bool = True):
         self.url = url.rstrip("/")
+        self.conflict_guard = conflict_guard
 
     def call(self, action: str, timeout: int = 60, **params):
         attempts = 3 if action in READ_ACTIONS else 1
@@ -68,6 +81,30 @@ class AnkiClient:
             raise AnkiError(str(data["error"]))
         return data.get("result")
 
+    def ensure_model(self, model_name: str = "Basic", timeout: int = 60) -> dict:
+        """目标为空时创建同名字段模型；已有模型时只校验字段。"""
+        version = self.call("version", timeout=timeout)
+        models = self.call("modelNames", timeout=timeout)
+        if model_name not in models:
+            try:
+                self.call(
+                    "createModel",
+                    timeout=timeout,
+                    modelName=model_name,
+                    inOrderFields=["Front", "Back"],
+                    css=MODEL_CSS,
+                    isCloze=False,
+                )
+            except AnkiError:
+                # 并发创建或容器不支持时，以再次读取的结果为准
+                models = self.call("modelNames", timeout=timeout)
+                if model_name not in models:
+                    raise
+        fields = self.call("modelFieldNames", modelName=model_name, timeout=timeout)
+        if fields != ["Front", "Back"]:
+            raise AnkiError(f"模型 {model_name} 字段应为 Front/Back，实际为 {fields}")
+        return {"version": version, "model": model_name, "fields": fields}
+
     def validate(self, model_name: str = "Basic", timeout: int = 60) -> dict:
         version = self.call("version", timeout=timeout)
         models = self.call("modelNames", timeout=timeout)
@@ -77,3 +114,17 @@ class AnkiClient:
         if fields != ["Front", "Back"]:
             raise AnkiError(f"模型 {model_name} 字段应为 Front/Back，实际为 {fields}")
         return {"version": version, "model": model_name, "fields": fields}
+
+    def sync_web(self, timeout: int = 600) -> None:
+        try:
+            self.call("sync", timeout=timeout)
+        except AnkiError as exc:
+            message = str(exc).lower()
+            if self.conflict_guard and (
+                "full sync" in message or "fullsync" in message
+            ):
+                raise AnkiError(
+                    "AnkiWeb 要求 full sync，已按全量同步保护中止；"
+                    "请在容器内手动确认后重试"
+                ) from exc
+            raise

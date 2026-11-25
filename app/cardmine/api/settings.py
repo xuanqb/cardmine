@@ -28,7 +28,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "dup_high_threshold": 0.92,
     "dup_low_threshold": 0.82,
     "dup_vector_threshold": 0.92,
-    "anki_url": "http://anki-connect-server:8765/api",
     "anki_model": "Basic",
     "anki_sync_enabled": True,
     "anki_conflict_guard": True,
@@ -54,7 +53,6 @@ class SettingsIn(BaseModel):
     dup_high_threshold: float | None = Field(None, ge=0, le=1)
     dup_low_threshold: float | None = Field(None, ge=0, le=1)
     dup_vector_threshold: float | None = Field(None, ge=0, le=1)
-    anki_url: str | None = None
     anki_model: str | None = None
     anki_sync_enabled: bool | None = None
     anki_conflict_guard: bool | None = None

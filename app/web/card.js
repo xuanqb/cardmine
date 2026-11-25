@@ -1,9 +1,8 @@
 const cardId = Number(window.location.pathname.split("/").pop());
 const statusBadge = document.getElementById("status-badge");
 const originBadge = document.getElementById("origin-badge");
-const flagField = document.getElementById("flag-field");
-const flagBadge = document.getElementById("flag-badge");
-const flagClear = document.getElementById("flag-clear");
+const ankiLinksField = document.getElementById("anki-links-field");
+const ankiLinkList = document.getElementById("anki-link-list");
 const statusSelect = document.getElementById("status-select");
 const moduleSelect = document.getElementById("module-select");
 const aliasSection = document.getElementById("alias-section");
@@ -509,21 +508,6 @@ function renderInfo() {
   originBadge.className = `badge ${origin.className}`;
   originBadge.textContent = origin.label;
 
-  const flagValue = Number(card.anki_flag) || 0;
-  if (card.flag_clear_pending) {
-    flagField.hidden = false;
-    flagBadge.className = "badge flag-pending";
-    flagBadge.textContent = "待清除同步";
-    flagClear.hidden = true;
-  } else if (flagValue) {
-    const flag = window.cm.flagMeta(flagValue);
-    flagField.hidden = false;
-    flagBadge.className = `badge ${flag.className}`;
-    flagBadge.textContent = flag.label;
-    flagClear.hidden = false;
-  } else {
-    flagField.hidden = true;
-  }
   document.getElementById("fact-mentions").textContent = `${card.mention_count} 次`;
   document.getElementById("fact-last").textContent = window.cm.formatTime(
     card.last_mention_at
@@ -534,7 +518,74 @@ function renderInfo() {
   document.getElementById("fact-updated").textContent = window.cm.formatTime(
     card.updated_at
   );
+  renderAnkiLinks();
   document.getElementById("front-view").textContent = card.front_md;
+}
+
+function renderAnkiLinks() {
+  const links = card.anki_links || [];
+  ankiLinksField.hidden = links.length === 0;
+  ankiLinkList.replaceChildren();
+  for (const link of links) {
+    const label = link.target_name || `目标 ${link.target_id}`;
+    const item = document.createElement("li");
+
+    const head = document.createElement("p");
+    head.className = "variant-text";
+    head.textContent = `${label} · ${link.anki_note_id ? `note ${link.anki_note_id}` : "未关联"}`;
+    item.append(head);
+
+    const badges = document.createElement("div");
+    badges.className = "flag-actions";
+    if (link.detached) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "已移出组";
+      badges.append(badge);
+    }
+    if (link.flag_clear_pending) {
+      const badge = document.createElement("span");
+      badge.className = "badge flag-pending";
+      badge.textContent = "待清除同步";
+      badges.append(badge);
+    } else if (Number(link.anki_flag) > 0) {
+      const flag = window.cm.flagMeta(link.anki_flag);
+      const badge = document.createElement("span");
+      badge.className = `badge ${flag.className}`;
+      badge.textContent = flag.label;
+      badges.append(badge);
+    }
+    if (Number(link.anki_flag) > 0 && !link.flag_clear_pending) {
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "ghost alias-remove";
+      clear.textContent = "清除旗帜";
+      clear.addEventListener("click", async () => {
+        clear.disabled = true;
+        try {
+          card = await window.cm.fetchJSON(
+            `/api/cards/${card.id}/flag/clear?target_id=${link.target_id}`,
+            { method: "POST" },
+          );
+          renderAnkiLinks();
+          showToast("已登记清除，下次推送同步到 Anki");
+        } catch (error) {
+          clear.disabled = false;
+          showToast(error.message || "登记失败", true);
+        }
+      });
+      badges.append(clear);
+    }
+    item.append(badges);
+
+    if (link.last_error) {
+      const error = document.createElement("p");
+      error.className = "variant-meta";
+      error.textContent = link.last_error;
+      item.append(error);
+    }
+    ankiLinkList.append(item);
+  }
 }
 
 function renderVariants() {
@@ -627,6 +678,13 @@ function renderAliases() {
   }
 }
 
+const CONFLICT_KIND_LABELS = {
+  edit: "双方修改",
+  duplicate: "正面重复",
+  delete_edit: "编辑对删除",
+  media: "媒体冲突",
+};
+
 function renderConflicts() {
   const items = card.conflicts || [];
   const badge = document.getElementById("conflict-badge");
@@ -639,7 +697,10 @@ function renderConflicts() {
     const entry = document.createElement("li");
     const head = document.createElement("p");
     head.className = "variant-text";
-    head.textContent = item.field === "front" ? "正面冲突" : "背面冲突";
+    const kind = CONFLICT_KIND_LABELS[item.kind] || item.kind;
+    head.textContent = item.target_name
+      ? `${item.target_name} · ${kind}`
+      : kind;
     entry.append(head);
     if (item.note) {
       const note = document.createElement("p");
@@ -652,17 +713,21 @@ function renderConflicts() {
     summary.textContent = "查看两侧内容";
     const body = document.createElement("div");
     body.className = "conflict-compare";
-    for (const [label, value] of [
-      ["系统", item.system_value],
-      ["Anki", item.anki_value],
+    for (const [title, front, back, deck] of [
+      ["系统", item.system_front, item.system_back, item.system_deck],
+      ["目标", item.target_front, item.target_back, item.target_deck],
     ]) {
       const block = document.createElement("div");
-      const title = document.createElement("span");
-      title.className = "conflict-side-label";
-      title.textContent = label;
+      const label = document.createElement("span");
+      label.className = "conflict-side-label";
+      label.textContent = title;
       const pre = document.createElement("pre");
-      pre.textContent = value || "（空）";
-      block.append(title, pre);
+      pre.textContent = [
+        `正面：${front || "（空）"}`,
+        `背面：${back || "（空）"}`,
+        `牌组：${deck || "（空）"}`,
+      ].join("\n");
+      block.append(label, pre);
       body.append(block);
     }
     compare.append(summary, body);
@@ -984,21 +1049,6 @@ async function init() {
 
     saveButton.addEventListener("click", () => save());
     saveReadyButton.addEventListener("click", () => save("ready"));
-    flagClear.addEventListener("click", async () => {
-      if (!card || card.flag_clear_pending) return;
-      flagClear.disabled = true;
-      try {
-        card = await window.cm.fetchJSON(`/api/cards/${card.id}/flag/clear`, {
-          method: "POST",
-        });
-        renderInfo();
-        showToast("已登记清除，下次推送同步到 Anki");
-      } catch (error) {
-        showToast(error.message || "登记失败", true);
-      } finally {
-        flagClear.disabled = false;
-      }
-    });
     aiOpen.addEventListener("click", openAIDrawer);
     aiDrawerClose.addEventListener("click", closeAIDrawer);
     aiDrawerBackdrop.addEventListener("click", closeAIDrawer);

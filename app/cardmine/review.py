@@ -165,7 +165,14 @@ def _restore(conn, table: str, row: dict, key: str) -> None:
     exists = conn.execute(
         f"SELECT 1 FROM {table} WHERE {key} = ?", (row[key],)
     ).fetchone()
-    columns = [column for column in row if column != key]
+    valid = {
+        item[1] for item in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    columns = [
+        column for column in row if column != key and column in valid
+    ]
+    if not columns:
+        return
     if exists:
         conn.execute(
             f"UPDATE {table} SET {', '.join(f'{column} = ?' for column in columns)} "
@@ -176,6 +183,30 @@ def _restore(conn, table: str, row: dict, key: str) -> None:
     names = list(row)
     conn.execute(
         f"INSERT INTO {table}({', '.join(names)}) "
+        f"VALUES({', '.join('?' for _ in names)})",
+        [row[name] for name in names],
+    )
+
+
+def _restore_sync(conn, row: dict) -> None:
+    key = (row["kp_id"], row["target_id"])
+    exists = conn.execute(
+        "SELECT 1 FROM anki_sync WHERE kp_id = ? AND target_id = ?", key
+    ).fetchone()
+    columns = [
+        column for column in row if column not in ("kp_id", "target_id")
+    ]
+    if exists:
+        conn.execute(
+            f"UPDATE anki_sync SET "
+            f"{', '.join(f'{column} = ?' for column in columns)} "
+            f"WHERE kp_id = ? AND target_id = ?",
+            [row[column] for column in columns] + list(key),
+        )
+        return
+    names = list(row)
+    conn.execute(
+        f"INSERT INTO anki_sync({', '.join(names)}) "
         f"VALUES({', '.join('?' for _ in names)})",
         [row[name] for name in names],
     )
@@ -261,45 +292,39 @@ def _resolve(conn, candidate, action: str, keep_side: str = "left") -> dict:
             (survivor_id, discarded_id),
         )
 
-        note_id = survivor["anki_note_id"]
-        if note_id is None and discarded["anki_note_id"] is not None:
-            note_id = discarded["anki_note_id"]
-            survivor_sync = conn.execute(
-                "SELECT 1 FROM anki_sync WHERE kp_id = ?", (survivor_id,)
-            ).fetchone()
-            if survivor_sync is None:
-                discarded_sync = conn.execute(
-                    "SELECT * FROM anki_sync WHERE kp_id = ?", (discarded_id,)
-                ).fetchone()
-                if discarded_sync is not None:
-                    conn.execute(
-                        "DELETE FROM anki_sync WHERE kp_id = ?", (discarded_id,)
-                    )
-                    conn.execute(
-                        "INSERT INTO anki_sync"
-                        "(kp_id, anki_note_id, pushed_hash, pushed_deck, pushed_at, last_error) "
-                        "VALUES(?, ?, NULL, ?, ?, ?)",
-                        (
-                            survivor_id,
-                            discarded_sync["anki_note_id"],
-                            discarded_sync["pushed_deck"],
-                            discarded_sync["pushed_at"],
-                            discarded_sync["last_error"],
-                        ),
-                    )
+        survivor_targets = {
+            int(row["target_id"])
+            for row in conn.execute(
+                "SELECT target_id FROM anki_sync WHERE kp_id = ?", (survivor_id,)
+            )
+        }
+        for row in conn.execute(
+            "SELECT * FROM anki_sync WHERE kp_id = ?", (discarded_id,)
+        ).fetchall():
+            target_id = int(row["target_id"])
+            if target_id not in survivor_targets:
+                conn.execute(
+                    "UPDATE anki_sync SET kp_id = ? WHERE kp_id = ? AND target_id = ?",
+                    (survivor_id, discarded_id, target_id),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM anki_sync WHERE kp_id = ? AND target_id = ?",
+                    (discarded_id, target_id),
+                )
 
         status = survivor["status"]
         if merged_back.strip() and status == "draft":
             status = "ready"
 
         conn.execute(
-            "UPDATE knowledge_point SET back_md = ?, status = ?, anki_note_id = ?, "
+            "UPDATE knowledge_point SET back_md = ?, status = ?, "
             "updated_at = ? WHERE id = ?",
-            (merged_back, status, note_id, now, survivor_id),
+            (merged_back, status, now, survivor_id),
         )
         conn.execute(
             "UPDATE anki_sync SET pushed_hash = NULL, pushed_front_hash = NULL, "
-            "pushed_back_hash = NULL WHERE kp_id = ?",
+            "pushed_back_hash = NULL, force_push = 1 WHERE kp_id = ?",
             (survivor_id,),
         )
         aliases.record_merge(conn, action_id, survivor_id, [discarded])
@@ -419,51 +444,84 @@ def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
             (*sources, *sources),
         )
 
-        note_id = survivor["anki_note_id"]
-        note_from = survivor_id if note_id is not None else None
-        if note_id is None:
-            note_cards = [row for row in source_rows if row["anki_note_id"] is not None]
+        def priority(row) -> tuple:
+            sync = conn.execute(
+                "SELECT pushed_at FROM anki_sync "
+                "WHERE kp_id = ? AND target_id = ?",
+                (row["id"], target_id),
+            ).fetchone()
+            return (
+                1 if row["status"] == "ready" else 0,
+                (sync["pushed_at"] or "") if sync is not None else "",
+                row["updated_at"] or "",
+            )
 
-            def priority(row) -> tuple:
-                sync = conn.execute(
-                    "SELECT pushed_at FROM anki_sync WHERE kp_id = ?", (row["id"],)
-                ).fetchone()
-                return (
-                    1 if row["status"] == "ready" else 0,
-                    (sync["pushed_at"] or "") if sync is not None else "",
-                    row["updated_at"] or "",
-                )
+        survivor_syncs = {
+            int(row["target_id"]): dict(row)
+            for row in conn.execute(
+                "SELECT * FROM anki_sync WHERE kp_id = ?", (survivor_id,)
+            )
+        }
+        survivor_note_ids = {
+            target_id: row["anki_note_id"]
+            for target_id, row in survivor_syncs.items()
+            if row["anki_note_id"] is not None
+        }
+        source_syncs = {
+            int(row["kp_id"]): dict(row)
+            for row in conn.execute(
+                "SELECT * FROM anki_sync WHERE kp_id IN "
+                f"({source_placeholders})",
+                tuple(sources),
+            )
+        }
 
-            if note_cards:
-                picked = max(note_cards, key=priority)
-                note_id = picked["anki_note_id"]
-                note_from = picked["id"]
-                picked_sync = conn.execute(
-                    "SELECT * FROM anki_sync WHERE kp_id = ?", (picked["id"],)
-                ).fetchone()
-                conn.execute("DELETE FROM anki_sync WHERE kp_id = ?", (survivor_id,))
-                if picked_sync is not None:
-                    conn.execute(
-                        "INSERT INTO anki_sync"
-                        "(kp_id, anki_note_id, pushed_hash, pushed_deck, pushed_at, last_error) "
-                        "VALUES(?, ?, NULL, ?, ?, ?)",
-                        (
-                            survivor_id,
-                            picked_sync["anki_note_id"],
-                            picked_sync["pushed_deck"],
-                            picked_sync["pushed_at"],
-                            picked_sync["last_error"],
-                        ),
-                    )
+        note_from = None
+        for target_id in {
+            int(row["target_id"]) for row in source_syncs.values()
+        }:
+            if target_id in survivor_note_ids:
+                continue
+            note_cards = [
+                row
+                for row in source_rows
+                if source_syncs.get(row["id"], {}).get("target_id") == target_id
+                and source_syncs[row["id"]]["anki_note_id"] is not None
+            ]
+            if not note_cards:
+                continue
+            picked = max(note_cards, key=priority)
+            picked_sync = source_syncs[picked["id"]]
+            conn.execute(
+                "DELETE FROM anki_sync WHERE kp_id = ? AND target_id = ?",
+                (survivor_id, target_id),
+            )
+            conn.execute(
+                "UPDATE anki_sync SET kp_id = ? WHERE kp_id = ? AND target_id = ?",
+                (survivor_id, picked["id"], target_id),
+            )
+            survivor_syncs[target_id] = picked_sync
+            survivor_note_ids[target_id] = picked_sync["anki_note_id"]
+            note_from = picked["id"]
 
+        note_id = next(iter(survivor_note_ids.values()), None)
         unclaimed = [
             {
-                "kp_id": row["id"],
+                "kp_id": row["kp_id"],
+                "target_id": int(row["target_id"]),
                 "note_id": row["anki_note_id"],
-                "front_md": row["front_md"],
+                "front_md": next(
+                    (
+                        item["front_md"]
+                        for item in source_rows
+                        if item["id"] == row["kp_id"]
+                    ),
+                    "",
+                ),
             }
-            for row in source_rows
-            if row["anki_note_id"] is not None and row["id"] != note_from
+            for row in source_syncs.values()
+            if row["anki_note_id"] is not None
+            and survivor_note_ids.get(int(row["target_id"])) != row["anki_note_id"]
         ]
 
         merged_back = (survivor["back_md"] or "").strip()
@@ -503,9 +561,8 @@ def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
             (survivor_id, *sources),
         )
         conn.execute(
-            "UPDATE knowledge_point SET back_md = ?, anki_note_id = ?, "
-            "updated_at = ? WHERE id = ?",
-            (merged_back, note_id, now, survivor_id),
+            "UPDATE knowledge_point SET back_md = ?, updated_at = ? WHERE id = ?",
+            (merged_back, now, survivor_id),
         )
         aliases.record_merge(conn, action_id, survivor_id, source_rows)
         conn.execute(
@@ -514,7 +571,7 @@ def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
         )
         conn.execute(
             "UPDATE anki_sync SET pushed_hash = NULL, pushed_front_hash = NULL, "
-            "pushed_back_hash = NULL WHERE kp_id = ?",
+            "pushed_back_hash = NULL, force_push = 1 WHERE kp_id = ?",
             (survivor_id,),
         )
 
@@ -524,6 +581,7 @@ def merge_cards(survivor_id: int, source_ids: list[int]) -> dict:
         "action_id": action_id,
         "anki_note_id": note_id,
         "note_from": note_from,
+        "survivor_note_ids": survivor_note_ids,
         "unclaimed_notes": unclaimed,
     }
 
@@ -607,7 +665,7 @@ def undo_action(action_id: int) -> dict:
         for snapshot in payload.get("mentions") or []:
             _restore(conn, "mention", snapshot, "id")
         for snapshot in payload.get("syncs") or []:
-            _restore(conn, "anki_sync", snapshot, "kp_id")
+            _restore_sync(conn, snapshot)
         for snapshot in payload.get("candidates") or []:
             _restore(conn, "dup_candidate", snapshot, "id")
 

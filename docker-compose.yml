@@ -30,9 +30,27 @@ services:
       ANKICONNECT_BIND: 0.0.0.0
       ANKICONNECT_ANKIWEB_USER: ${ANKIWEB_USER:-}
       ANKICONNECT_ANKIWEB_PASS: ${ANKIWEB_PASS:-}
-      ANKICONNECT_FAIL_ON_FULL_SYNC_CONFLICT: ${ANKI_FAIL_ON_FULL_SYNC_CONFLICT:-false}
+      ANKICONNECT_FAIL_ON_FULL_SYNC_CONFLICT: ${ANKI_FAIL_ON_FULL_SYNC_CONFLICT:-true}
     # 无鉴权，仅限可信局域网；不要暴露到公网
     ports:
       - "${ANKI_PORT:-8765}:8765"
     volumes:
       - "${ANKI_DATA_PATH:-./data/anki}:/data/anki"
+
+  anki-connect-friend:
+    image: glechic/anki-connect-server:v0.5.0
+    container_name: cardmine-anki-friend
+    restart: unless-stopped
+    environment:
+      ANKICONNECT_COLLECTION_PATH: /data/anki/collection.anki2
+      ANKICONNECT_PORT: "8765"
+      # 容器内必须监听 0.0.0.0，主应用才能跨容器访问
+      ANKICONNECT_BIND: 0.0.0.0
+      ANKICONNECT_ANKIWEB_USER: ${ANKIWEB_FRIEND_USER:-}
+      ANKICONNECT_ANKIWEB_PASS: ${ANKIWEB_FRIEND_PASS:-}
+      ANKICONNECT_FAIL_ON_FULL_SYNC_CONFLICT: ${ANKI_FRIEND_FAIL_ON_FULL_SYNC_CONFLICT:-true}
+    # 无鉴权，仅限可信局域网；不要暴露到公网
+    ports:
+      - "${ANKI_FRIEND_PORT:-8766}:8765"
+    volumes:
+      - "${ANKI_FRIEND_DATA_PATH:-./data/anki-friend}:/data/anki"

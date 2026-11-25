@@ -1,23 +1,24 @@
 import threading
 import uuid
+from contextlib import closing
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import config
-from ..anki import (
-    AnkiClient,
-    AnkiError,
-    audit,
+from ..anki import targets
+from ..anki.client import AnkiClient, AnkiError
+from ..anki.service import (
+    audit_target,
     list_conflicts,
-    pull,
-    push,
+    pull_target,
+    push_targets,
     resolve_conflict,
-    sync_anki,
-    takeover,
+    summary,
+    sync_all_targets,
+    takeover_target,
     undo_conflict,
 )
-from ..anki.service import summary
 from ..db import connect, utc_now
 from .settings import load_settings
 
@@ -26,6 +27,7 @@ router = APIRouter(prefix="/api/anki", tags=["anki"])
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 _ACTIVE = ("queued", "running")
+ACTIONS = {"takeover", "audit", "push", "pull", "sync"}
 
 
 def _set(job_id: str, **fields) -> None:
@@ -51,7 +53,61 @@ def _fail_job(job_id: str, reason: str) -> None:
         )
 
 
-def _run_job(job_id: str, action: str, settings: dict) -> None:
+def _enabled_target_ids(target_id: int | None) -> list[int]:
+    with closing(connect()) as conn:
+        rows = targets.list_targets(conn, enabled_only=True)
+    ids = [int(row["id"]) for row in rows]
+    if target_id is not None:
+        if target_id not in ids:
+            raise ValueError("同步目标不存在或未启用")
+        return [target_id]
+    return ids
+
+
+def _run_action(action: str, settings: dict, target_id: int | None, progress):
+    model = settings["anki_model"]
+    enabled = settings["anki_sync_enabled"]
+    guard = bool(settings.get("anki_conflict_guard", True))
+    if action == "push":
+        return push_targets(
+            model, enabled, guard, progress, _enabled_target_ids(target_id)
+        )
+    if action == "pull":
+        ids = _enabled_target_ids(target_id)
+        results = []
+        for item in ids:
+            result = pull_target(item, model, enabled, guard, progress)
+            result["action"] = "pull"
+            results.append(result)
+        return results[0] if len(results) == 1 else {"targets": results}
+    if action in ("takeover", "audit"):
+        ids = _enabled_target_ids(target_id)
+        results = []
+        for item in ids:
+            try:
+                if action == "takeover":
+                    results.append(takeover_target(item, model, guard, progress))
+                else:
+                    results.append(audit_target(item, model, guard, progress))
+            except Exception as exc:  # noqa: BLE001 - 单目标失败不阻塞
+                results.append(
+                    {
+                        "target_id": item,
+                        "target": str(item),
+                        "errors": [str(exc)],
+                        "matched": 0,
+                        "missing_total": 0,
+                    }
+                )
+        return results[0] if len(results) == 1 else {"targets": results}
+    return sync_all_targets(
+        model, enabled, guard, progress, _enabled_target_ids(target_id)
+    )
+
+
+def _run_job(
+    job_id: str, action: str, settings: dict, target_id: int | None
+) -> None:
     def progress(phase: str, done: int, total: int) -> None:
         _set(job_id, phase=phase, processed=done, total=total)
 
@@ -66,29 +122,8 @@ def _run_job(job_id: str, action: str, settings: dict) -> None:
     )
     timer.daemon = True
     timer.start()
-
-    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
     try:
-        if action == "takeover":
-            result = takeover(client, settings["anki_model"], progress)
-        elif action == "audit":
-            result = audit(client, settings["anki_model"], progress)
-        elif action == "push":
-            result = push(
-                client,
-                settings["anki_model"],
-                settings["anki_sync_enabled"],
-                progress,
-            )
-        elif action == "pull":
-            result = pull(client, settings["anki_model"], progress)
-        else:
-            result = sync_anki(
-                client,
-                settings["anki_model"],
-                settings["anki_sync_enabled"],
-                progress,
-            )
+        result = _run_action(action, settings, target_id, progress)
         _set(job_id, status="done", result=result, finished_at=utc_now())
     except Exception as exc:
         _set(job_id, status="failed", error=str(exc), finished_at=utc_now())
@@ -96,7 +131,9 @@ def _run_job(job_id: str, action: str, settings: dict) -> None:
         timer.cancel()
 
 
-def _start(action: str) -> dict:
+def _start(action: str, target_id: int | None = None) -> dict:
+    if action not in ACTIONS:
+        raise HTTPException(status_code=400, detail="不支持的任务")
     with _lock:
         if any(job["status"] in _ACTIVE for job in _jobs.values()):
             raise HTTPException(status_code=409, detail="已有同步任务在运行，请稍候")
@@ -112,6 +149,7 @@ def _start(action: str) -> dict:
         _jobs[job_id] = {
             "job_id": job_id,
             "action": action,
+            "target_id": target_id,
             "status": "queued",
             "phase": "排队中",
             "processed": 0,
@@ -127,7 +165,9 @@ def _start(action: str) -> dict:
 
     settings = load_settings()
     threading.Thread(
-        target=_run_job, args=(job_id, action, settings), daemon=True
+        target=_run_job,
+        args=(job_id, action, settings, target_id),
+        daemon=True,
     ).start()
     return {"job_id": job_id}
 
@@ -158,27 +198,44 @@ def _backups(limit: int = 7) -> list[dict]:
     return result
 
 
+def _target_payload(conn, row) -> dict:
+    item = dict(row)
+    item["group_ids"] = targets.target_group_ids(conn, int(row["id"]))
+    item.update(targets.target_stats(conn, int(row["id"])))
+    return item
+
+
 @router.get("/status")
 def get_status() -> dict:
     settings = load_settings()
-    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
+    with closing(connect()) as conn:
+        rows = targets.list_targets(conn)
+        target_items = [_target_payload(conn, row) for row in rows]
 
+    primary = next((row for row in rows if row["enabled"]), None)
     status = {
-        "url": client.url,
+        "url": primary["base_url"] if primary else None,
         "model": settings["anki_model"],
         "sync_enabled": settings["anki_sync_enabled"],
+        "conflict_guard": bool(settings.get("anki_conflict_guard", True)),
         "connected": False,
         "version": None,
         "fields": None,
         "error": None,
+        "targets": target_items,
     }
-    try:
-        info = client.validate(settings["anki_model"], timeout=8)
-        status.update(
-            connected=True, version=info["version"], fields=info["fields"]
+    if primary is not None:
+        client = AnkiClient(
+            primary["base_url"],
+            conflict_guard=bool(settings.get("anki_conflict_guard", True)),
         )
-    except AnkiError as exc:
-        status["error"] = str(exc)
+        try:
+            info = client.validate(settings["anki_model"], timeout=8)
+            status.update(
+                connected=True, version=info["version"], fields=info["fields"]
+            )
+        except AnkiError as exc:
+            status["error"] = str(exc)
 
     running = None
     with _lock:
@@ -187,50 +244,155 @@ def get_status() -> dict:
                 running = dict(job)
                 break
 
-    return {**status, **summary(), "backups": _backups(), "running_job": running}
+    return {
+        **status,
+        **summary(),
+        "targets": target_items,
+        "backups": _backups(),
+        "running_job": running,
+    }
+
+
+class TargetIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    base_url: str = Field(min_length=1, max_length=500)
+    enabled: bool = True
+
+
+class TargetPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+    enabled: bool | None = None
+    sort: int | None = Field(default=None, ge=0)
+
+
+class TargetGroupsIn(BaseModel):
+    group_ids: list[int] = Field(default_factory=list, max_length=2000)
+
+
+def _check_url(base_url: str) -> str:
+    value = base_url.strip()
+    if not value.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="地址必须以 http:// 或 https:// 开头")
+    return value.rstrip("/")
+
+
+@router.get("/targets")
+def get_targets() -> dict:
+    with closing(connect()) as conn:
+        rows = targets.list_targets(conn)
+        return {
+            "items": [_target_payload(conn, row) for row in rows],
+            "groups": targets.all_groups(conn),
+        }
+
+
+@router.post("/targets")
+def create_target(payload: TargetIn) -> dict:
+    with closing(connect()) as conn, conn:
+        item = targets.create_target(
+            conn, payload.name, _check_url(payload.base_url), payload.enabled
+        )
+        return _target_payload(conn, targets.get_target(conn, item["id"]))
+
+
+@router.patch("/targets/{target_id}")
+def update_target(target_id: int, payload: TargetPatch) -> dict:
+    updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+    if "base_url" in updates:
+        updates["base_url"] = _check_url(updates["base_url"])
+    with closing(connect()) as conn, conn:
+        if targets.get_target(conn, target_id) is None:
+            raise HTTPException(status_code=404, detail="同步目标不存在")
+        row = targets.update_target(conn, target_id, **updates)
+        return _target_payload(conn, row)
+
+
+@router.delete("/targets/{target_id}")
+def delete_target(target_id: int) -> dict:
+    with closing(connect()) as conn, conn:
+        if not targets.delete_target(conn, target_id):
+            raise HTTPException(status_code=404, detail="同步目标不存在")
+    return {"deleted": target_id}
+
+
+@router.put("/targets/{target_id}/groups")
+def set_target_groups(target_id: int, payload: TargetGroupsIn) -> dict:
+    with closing(connect()) as conn, conn:
+        if targets.get_target(conn, target_id) is None:
+            raise HTTPException(status_code=404, detail="同步目标不存在")
+        groups = targets.set_target_groups(conn, target_id, payload.group_ids)
+        return {"target_id": target_id, "group_ids": groups}
+
+
+@router.get("/targets/{target_id}/status")
+def get_target_status(target_id: int) -> dict:
+    settings = load_settings()
+    with closing(connect()) as conn:
+        row = targets.get_target(conn, target_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="同步目标不存在")
+        item = _target_payload(conn, row)
+    item.update(connected=False, version=None, fields=None, error=None)
+    client = AnkiClient(
+        row["base_url"],
+        conflict_guard=bool(settings.get("anki_conflict_guard", True)),
+    )
+    try:
+        info = client.validate(settings["anki_model"], timeout=8)
+        item.update(
+            connected=True, version=info["version"], fields=info["fields"]
+        )
+    except AnkiError as exc:
+        item["error"] = str(exc)
+    return item
 
 
 @router.post("/takeover")
-def start_takeover() -> dict:
-    return _start("takeover")
+def start_takeover(target_id: int | None = None) -> dict:
+    return _start("takeover", target_id)
 
 
 @router.post("/audit")
-def start_audit() -> dict:
-    return _start("audit")
+def start_audit(target_id: int | None = None) -> dict:
+    return _start("audit", target_id)
 
 
 class NoteDeleteIn(BaseModel):
+    target_id: int
     note_ids: list[int] = Field(min_length=1, max_length=500)
 
 
 @router.post("/notes/delete")
 def delete_notes(payload: NoteDeleteIn) -> dict:
     note_ids = list(dict.fromkeys(payload.note_ids))
-    settings = load_settings()
-    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
+    with closing(connect()) as conn:
+        target = targets.get_target(conn, payload.target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="同步目标不存在")
+    client = AnkiClient(target["base_url"])
     try:
         client.call("deleteNotes", timeout=15, notes=note_ids)
     except (AnkiError, OSError, ValueError) as exc:
         raise HTTPException(
             status_code=502, detail=f"Anki 删除失败：{exc}"
         ) from exc
-    return {"deleted": note_ids}
+    return {"deleted": note_ids, "target_id": payload.target_id}
 
 
 @router.post("/push")
-def start_push() -> dict:
-    return _start("push")
+def start_push(target_id: int | None = None) -> dict:
+    return _start("push", target_id)
 
 
 @router.post("/sync")
-def start_sync() -> dict:
-    return _start("sync")
+def start_sync(target_id: int | None = None) -> dict:
+    return _start("sync", target_id)
 
 
 @router.post("/pull")
-def start_pull() -> dict:
-    return _start("pull")
+def start_pull(target_id: int | None = None) -> dict:
+    return _start("pull", target_id)
 
 
 @router.get("/conflicts")
@@ -242,23 +404,19 @@ def get_conflicts(status: str = "pending", limit: int = 100) -> dict:
 
 
 class ConflictResolveIn(BaseModel):
-    choice: str = Field(pattern="^(system|anki)$")
+    choice: str = Field(pattern="^(system|target)$")
 
 
 @router.post("/conflicts/{conflict_id}/resolve")
 def resolve(conflict_id: int, payload: ConflictResolveIn) -> dict:
-    settings = load_settings()
-    client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
     try:
-        return resolve_conflict(client, conflict_id, payload.choice)
+        return resolve_conflict(conflict_id, payload.choice)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except AnkiError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/conflicts/{conflict_id}/undo")
@@ -269,31 +427,44 @@ def undo(conflict_id: int) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/logs")
-def get_logs(status: str | None = None, limit: int = 50) -> dict:
-    where = ""
+def get_logs(
+    status: str | None = None, limit: int = 50, target_id: int | None = None
+) -> dict:
+    where = []
+    params: list = []
     if status == "failed":
-        where = "WHERE s.last_error IS NOT NULL"
+        where.append("s.last_error IS NOT NULL")
     elif status == "pushed":
-        where = "WHERE s.last_error IS NULL AND s.pushed_at IS NOT NULL"
+        where.append("s.last_error IS NULL AND s.pushed_at IS NOT NULL")
+    if target_id is not None:
+        where.append("s.target_id = ?")
+        params.append(target_id)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
     limit = max(1, min(limit, 200))
 
-    with connect() as conn:
+    with closing(connect()) as conn:
         rows = conn.execute(
             f"""
-            SELECT s.kp_id, s.anki_note_id, s.pushed_hash, s.pushed_at,
-                   s.last_error, s.pushed_deck, kp.front_md, kp.status AS card_status
-            FROM anki_sync s JOIN knowledge_point kp ON kp.id = s.kp_id
-            {where}
+            SELECT s.kp_id, s.target_id, t.name AS target_name, s.anki_note_id,
+                   s.pushed_hash, s.pushed_at, s.last_error, s.pushed_deck,
+                   s.detached, kp.front_md, kp.status AS card_status
+            FROM anki_sync s
+            JOIN knowledge_point kp ON kp.id = s.kp_id
+            LEFT JOIN anki_target t ON t.id = s.target_id
+            {clause}
             ORDER BY COALESCE(s.pushed_at, '') DESC, s.kp_id DESC
             LIMIT ?
             """,
-            (limit,),
+            (*params, limit),
         ).fetchall()
         total = conn.execute(
-            f"SELECT COUNT(*) AS value FROM anki_sync s {where}"
+            f"SELECT COUNT(*) AS value FROM anki_sync s {clause}",
+            params,
         ).fetchone()["value"]
 
     return {"total": total, "items": [dict(row) for row in rows]}

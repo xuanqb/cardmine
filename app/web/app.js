@@ -10,6 +10,10 @@ const ankiBox = document.querySelector(".sync-state");
 const ankiAlert = document.getElementById("anki-alert");
 const ankiProgress = document.getElementById("anki-progress");
 const ankiReport = document.getElementById("anki-report");
+const targetList = document.getElementById("target-list");
+const targetForm = document.getElementById("target-form");
+const groupMatrix = document.getElementById("group-matrix");
+const matrixHint = document.getElementById("matrix-hint");
 const auditResult = document.getElementById("audit-result");
 const jobButtons = [
   document.getElementById("anki-takeover"),
@@ -25,11 +29,15 @@ const RESULT_LABELS = {
   matched: "匹配成功",
   unmatched_local: "本地未匹配",
   unmatched_anki: "Anki 未匹配",
-  ready: "待推送总数",
+  ready: "待同步卡片",
   changed: "内容变化",
   added: "新增卡片",
   updated: "更新卡片",
   pulled: "回写卡片",
+  imported: "导入新卡",
+  detached: "移出组",
+  archived_deleted: "清理归档",
+  flags_cleared: "清除旗帜",
   conflicts: "新冲突",
   skipped_conflicts: "跳过冲突卡",
   linked: "已关联卡片",
@@ -183,12 +191,12 @@ function renderAnkiStatus(data) {
   ankiBox.classList.toggle("ok", connected);
   ankiBox.classList.toggle("error", !connected);
   document.getElementById("anki-state").textContent = connected
-    ? `已连接 · v${data.version} · ${data.fields.join("/")}`
+    ? `已连接 · v${data.version} · ${(data.fields || []).join("/")}`
     : "未连接";
 
   const cards = data.cards || {};
   document.getElementById("anki-pending").textContent =
-    `${cards.pending_push ?? 0} 张`;
+    `${cards.pending_push ?? 0} 项`;
   document.getElementById("anki-matched").textContent =
     `${cards.matched ?? 0} 张`;
   document.getElementById("anki-conflicts").textContent =
@@ -209,6 +217,8 @@ function renderAnkiStatus(data) {
     ankiAlert.textContent = data.error || "无法连接 Anki 容器";
   }
 
+  if (data.targets) renderTargets(data.targets);
+
   const running = data.running_job;
   if (running && !busy) {
     ankiProgress.hidden = false;
@@ -227,6 +237,240 @@ async function loadAnkiStatus() {
     ankiAlert.textContent = error.message;
   }
 }
+
+let targetState = { items: [], groups: [] };
+
+function smallButton(label, handler, ghost = true) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  if (ghost) button.className = "ghost";
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function renderTargets(items) {
+  targetState.items = items || [];
+  targetList.replaceChildren();
+  if (!targetState.items.length) {
+    targetList.append(emptyHint("还没有同步目标。先新建一个目标，再把组映射过去。"));
+    return;
+  }
+  for (const item of targetState.items) {
+    const card = document.createElement("div");
+    card.className = "target-card";
+    card.dataset.targetId = String(item.id);
+
+    const head = document.createElement("div");
+    head.className = "target-head";
+    const name = document.createElement("strong");
+    name.textContent = item.name;
+    const badge = document.createElement("span");
+    badge.className = "target-badge";
+    badge.textContent = item.enabled ? "启用" : "停用";
+    head.append(name, badge);
+
+    const url = document.createElement("p");
+    url.className = "target-url";
+    url.textContent = item.base_url;
+
+    const stats = document.createElement("p");
+    stats.className = "target-stats";
+    stats.textContent =
+      `组 ${item.group_count ?? 0} · 待推送 ${item.pending ?? 0}` +
+      ` · 已关联 ${item.linked ?? 0} · 移出 ${item.detached ?? 0}` +
+      ` · 冲突 ${item.conflicts ?? 0}` +
+      ` · 最近同步 ${formatTime(item.last_sync_at)}`;
+
+    const error = document.createElement("p");
+    error.className = "target-error";
+    error.hidden = !item.last_error;
+    error.textContent = item.last_error || "";
+
+    const actions = document.createElement("div");
+    actions.className = "sync-actions";
+    actions.append(
+      smallButton("检测", async () => {
+        try {
+          const status = await fetchJSON(`/api/anki/targets/${item.id}/status`);
+          badge.textContent = status.connected
+            ? `已连接 v${status.version}`
+            : `未连接：${status.error || "未知错误"}`;
+          badge.classList.toggle("ok", Boolean(status.connected));
+          badge.classList.toggle("error", !status.connected);
+        } catch (err) {
+          badge.textContent = err.message;
+          badge.classList.add("error");
+        }
+      }),
+      smallButton("推送", () => startJob("push", renderReport, item.id)),
+      smallButton("拉取", () => startJob("pull", renderReport, item.id)),
+      smallButton("同步", () => startJob("sync", renderReport, item.id)),
+      smallButton("接管", () => startJob("takeover", renderReport, item.id)),
+      smallButton("体检", () => startJob("audit", renderAudit, item.id)),
+      smallButton("编辑", () => openTargetForm(item)),
+      smallButton(
+        "删除",
+        async () => {
+          if (
+            !window.confirm(
+              `删除同步目标「${item.name}」？不会删除 Anki 里的卡片，只停止 cardmine 的同步。`,
+            )
+          ) {
+            return;
+          }
+          try {
+            await fetchJSON(`/api/anki/targets/${item.id}`, {
+              method: "DELETE",
+            });
+            showToast("目标已删除");
+            await loadTargets();
+            loadAnkiStatus();
+          } catch (err) {
+            showToast(err.message || "删除失败", true);
+          }
+        },
+        false,
+      ),
+    );
+
+    card.append(head, url, stats, error, actions);
+    targetList.append(card);
+  }
+}
+
+function renderMatrix(data) {
+  groupMatrix.replaceChildren();
+  const groups = (data && data.groups) || [];
+  const items = (data && data.items) || targetState.items;
+  if (!items.length || !groups.length) {
+    groupMatrix.append(
+      emptyHint(
+        !groups.length
+          ? "还没有顶层模块，先在卡片页创建分组。"
+          : "先新建同步目标，再配置组映射。",
+      ),
+    );
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "matrix-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  headRow.append(document.createElement("th"));
+  for (const target of items) {
+    const th = document.createElement("th");
+    th.textContent = target.name;
+    headRow.append(th);
+  }
+  thead.append(headRow);
+  table.append(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const group of groups) {
+    const row = document.createElement("tr");
+    const label = document.createElement("th");
+    label.textContent = group.path;
+    row.append(label);
+    for (const target of items) {
+      const cell = document.createElement("td");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = (target.group_ids || []).includes(group.id);
+      box.dataset.groupId = String(group.id);
+      box.dataset.targetId = String(target.id);
+      cell.append(box);
+      row.append(cell);
+    }
+    tbody.append(row);
+  }
+  table.append(tbody);
+  groupMatrix.append(table);
+}
+
+async function loadTargets() {
+  try {
+    const data = await fetchJSON("/api/anki/targets");
+    renderTargets(data.items);
+    renderMatrix(data);
+  } catch (error) {
+    targetList.replaceChildren(emptyHint(error.message || "读取同步目标失败"));
+  }
+}
+
+function openTargetForm(item) {
+  targetForm.hidden = false;
+  targetForm.elements.namedItem("name").value = item ? item.name : "";
+  targetForm.elements.namedItem("base_url").value = item ? item.base_url : "";
+  targetForm.elements.namedItem("enabled").checked = item
+    ? Boolean(item.enabled)
+    : true;
+  targetForm.elements.namedItem("target_id").value = item ? item.id : "";
+  targetForm.elements.namedItem("name").focus();
+}
+
+targetForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = {
+    name: targetForm.elements.namedItem("name").value.trim(),
+    base_url: targetForm.elements.namedItem("base_url").value.trim(),
+    enabled: targetForm.elements.namedItem("enabled").checked,
+  };
+  const targetId = targetForm.elements.namedItem("target_id").value;
+  try {
+    await fetchJSON(
+      targetId ? `/api/anki/targets/${targetId}` : "/api/anki/targets",
+      {
+        method: targetId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
+    targetForm.hidden = true;
+    showToast("目标已保存");
+    await loadTargets();
+    loadAnkiStatus();
+  } catch (error) {
+    showToast(error.message || "保存失败", true);
+  }
+});
+
+document
+  .getElementById("target-new")
+  .addEventListener("click", () => openTargetForm(null));
+document.getElementById("target-cancel").addEventListener("click", () => {
+  targetForm.hidden = true;
+});
+
+document.getElementById("matrix-save").addEventListener("click", async () => {
+  const boxes = Array.from(groupMatrix.querySelectorAll("input[type=checkbox]"));
+  const byTarget = new Map();
+  for (const box of boxes) {
+    const targetId = Number(box.dataset.targetId);
+    if (!byTarget.has(targetId)) byTarget.set(targetId, []);
+    if (box.checked) {
+      byTarget.get(targetId).push(Number(box.dataset.groupId));
+    }
+  }
+  matrixHint.textContent = "保存中…";
+  try {
+    for (const [targetId, groupIds] of byTarget) {
+      await fetchJSON(`/api/anki/targets/${targetId}/groups`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ group_ids: groupIds }),
+      });
+    }
+    matrixHint.textContent = "已保存";
+    showToast("组映射已保存");
+    await loadTargets();
+    loadAnkiStatus();
+  } catch (error) {
+    matrixHint.textContent = "";
+    showToast(error.message || "保存映射失败", true);
+  }
+});
 
 function renderProgress(job) {
   ankiProgress.hidden = false;
@@ -623,18 +867,23 @@ async function cleanupMedia() {
   }
 }
 
-function conflictSide(title, text) {
+function conflictSide(title, front, back, deck) {
   const side = document.createElement("div");
   side.className = "conflict-side";
   const label = document.createElement("span");
   label.className = "conflict-side-label";
   label.textContent = title;
+
   const details = document.createElement("details");
   const summary = document.createElement("summary");
-  const preview = (text || "").replace(/\s+/g, " ").trim().slice(0, 120);
-  summary.textContent = preview || "（空）";
+  const preview = (front || "").replace(/\s+/g, " ").trim().slice(0, 120);
+  summary.textContent = preview || "（空正面）";
   const body = document.createElement("pre");
-  body.textContent = text || "（空）";
+  const parts = [];
+  if (deck) parts.push(`牌组：${deck}`);
+  parts.push(`正面：\n${front || "（空）"}`);
+  parts.push(`背面：\n${back || "（空）"}`);
+  body.textContent = parts.join("\n\n");
   details.append(summary, body);
   side.append(label, details);
   return side;
@@ -643,8 +892,8 @@ function conflictSide(title, text) {
 async function resolveConflictItem(id, choice) {
   const hint =
     choice === "system"
-      ? "将用系统当前内容覆盖 Anki 该字段，Anki 原文会保留在冲突记录中。确认继续？"
-      : "将采用 Anki 内容回写系统，可在解决后撤销。确认继续？";
+      ? "将用系统当前整张卡片覆盖所有目标，目标版本会保留在冲突记录中。确认继续？"
+      : "将采用目标整张卡片回写系统并分发到所有目标，可在解决后撤销。确认继续？";
   if (!window.confirm(hint)) return;
   try {
     await fetchJSON(`/api/anki/conflicts/${id}/resolve`, {
@@ -652,27 +901,35 @@ async function resolveConflictItem(id, choice) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ choice }),
     });
-    showToast(choice === "system" ? "已用系统内容覆盖 Anki" : "已采用 Anki 内容");
-    loadConflicts();
+    showToast(choice === "system" ? "已用系统内容" : "已采用目标内容");
+    await loadConflicts();
     loadAnkiStatus();
+    startJob("push", renderReport);
   } catch (error) {
     showToast(error.message || "处理失败", true);
   }
 }
 
 async function undoConflictItem(id) {
-  if (!window.confirm("撤销后会恢复系统原背面，并重新打开该冲突。确认继续？")) {
+  if (!window.confirm("撤销后会恢复系统原卡片，并重新打开该冲突。确认继续？")) {
     return;
   }
   try {
     await fetchJSON(`/api/anki/conflicts/${id}/undo`, { method: "POST" });
-    showToast("已撤销「用 Anki」");
+    showToast("已撤销「用目标」");
     loadConflicts();
     loadAnkiStatus();
   } catch (error) {
     showToast(error.message || "撤销失败", true);
   }
 }
+
+const CONFLICT_KIND_LABELS = {
+  edit: "双方修改",
+  duplicate: "正面重复",
+  delete_edit: "编辑对删除",
+  media: "媒体冲突",
+};
 
 function renderConflictItem(item, resolved) {
   const row = document.createElement("div");
@@ -684,14 +941,15 @@ function renderConflictItem(item, resolved) {
   title.href = `/cards/${item.kp_id}`;
   title.className = "conflict-title";
   title.textContent =
-    `#${item.kp_id} · ${item.field_label}` +
+    `#${item.kp_id} · ${CONFLICT_KIND_LABELS[item.kind] || item.kind}` +
     ` · ${item.front_preview || "（空正面）"}`;
   const meta = document.createElement("span");
   meta.className = "conflict-meta";
   const parts = [];
+  if (item.target_name) parts.push(`目标：${item.target_name}`);
   if (item.module_path) parts.push(item.module_path.replaceAll("/", " / "));
   if (resolved && item.resolution) {
-    parts.push(item.resolution === "anki" ? "已采用 Anki" : "已用系统");
+    parts.push(item.resolution === "target" ? "已用目标" : "已用系统");
     parts.push(formatTime(item.resolved_at));
   } else {
     parts.push(formatTime(item.created_at));
@@ -710,8 +968,18 @@ function renderConflictItem(item, resolved) {
   const diff = document.createElement("div");
   diff.className = "conflict-diff";
   diff.append(
-    conflictSide("系统", item.system_value),
-    conflictSide("Anki", item.anki_value),
+    conflictSide(
+      "系统",
+      item.system_front,
+      item.system_back,
+      item.system_deck,
+    ),
+    conflictSide(
+      "目标",
+      item.target_front,
+      item.target_back,
+      item.target_deck,
+    ),
   );
   row.append(diff);
 
@@ -726,17 +994,17 @@ function renderConflictItem(item, resolved) {
     );
     actions.append(useSystem);
 
-    if (item.field === "back") {
-      const useAnki = document.createElement("button");
-      useAnki.type = "button";
-      useAnki.className = "ghost";
-      useAnki.textContent = "用 Anki";
-      useAnki.addEventListener("click", () =>
-        resolveConflictItem(item.id, "anki"),
+    if (item.target_front) {
+      const useTarget = document.createElement("button");
+      useTarget.type = "button";
+      useTarget.className = "ghost";
+      useTarget.textContent = "用目标";
+      useTarget.addEventListener("click", () =>
+        resolveConflictItem(item.id, "target"),
       );
-      actions.append(useAnki);
+      actions.append(useTarget);
     }
-  } else if (item.resolution === "anki") {
+  } else if (item.resolution === "target") {
     const undo = document.createElement("button");
     undo.type = "button";
     undo.className = "ghost";
@@ -811,7 +1079,7 @@ function pollJob(jobId) {
   });
 }
 
-async function startJob(action, render = renderReport) {
+async function startJob(action, render = renderReport, targetId = null) {
   if (busy) return;
   setBusy(true);
   hideAnkiNotice();
@@ -822,7 +1090,8 @@ async function startJob(action, render = renderReport) {
   renderProgress({ phase: "排队中", processed: 0, total: 0 });
 
   try {
-    const { job_id } = await fetchJSON(`/api/anki/${action}`, {
+    const query = targetId ? `?target_id=${targetId}` : "";
+    const { job_id } = await fetchJSON(`/api/anki/${action}${query}`, {
       method: "POST",
     });
     const job = await pollJob(job_id);
@@ -894,6 +1163,7 @@ form.addEventListener("submit", async (event) => {
 loadHealth();
 loadSettings().catch(() => showToast("读取设置失败", true));
 loadAnkiStatus();
+loadTargets();
 loadConflicts();
 setInterval(loadHealth, 30000);
 setInterval(() => {

@@ -1,4 +1,6 @@
-"""接管匹配、增量推送与同步。"""
+"""多目标对等同步：每个目标独立笔记映射、三向合并、整卡冲突与删除传播。"""
+
+from __future__ import annotations
 
 import base64
 import hashlib
@@ -17,6 +19,7 @@ from ..importer.textfmt import (
     normalize_front,
     normalize_media_ref,
 )
+from . import targets
 from .backup import backup_anki
 from .client import AnkiClient, AnkiError
 
@@ -26,7 +29,6 @@ MARKDOWN_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
 REMOTE_PREFIXES = ("http://", "https://", "//", "/")
 
-FIELD_LABELS = {"front": "正面", "back": "背面"}
 FIELD_NAMES = {"front": "Front", "back": "Back"}
 _HTML_HINT_RE = re.compile(
     r"<\s*(?:img|br|pre|code|div|span|p|b|i|u|strong|em|ul|ol|li|table|tr|td|a|font)\b",
@@ -34,6 +36,8 @@ _HTML_HINT_RE = re.compile(
 )
 _FIELD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)")
 _FIELD_SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
+
+_UNSET = object()
 
 
 def _notify(progress: Progress | None, phase: str, done: int, total: int) -> None:
@@ -45,18 +49,17 @@ def _search_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _markdown_media(*texts: str) -> set[str]:
-    refs: set[str] = set()
-    for text in texts:
-        if not text:
-            continue
-        refs.update(MARKDOWN_IMG_RE.findall(text))
-        refs.update(SOUND_RE.findall(text))
-    return refs
-
-
 def _deck_name(module_path: str | None) -> str:
     return (module_path or "Default").replace("/", "::")
+
+
+def _system_deck(conn, kp_id: int) -> str:
+    row = conn.execute(
+        "SELECT m.path FROM knowledge_point kp "
+        "LEFT JOIN module m ON m.id = kp.module_id WHERE kp.id = ?",
+        (kp_id,),
+    ).fetchone()
+    return _deck_name(row["path"] if row else None)
 
 
 def _content_hash(front: str, back: str, deck: str, media: set[str]) -> str:
@@ -100,387 +103,33 @@ def field_hash(text: str) -> str:
     return hashlib.sha256(normalize_markdown(text).encode("utf-8")).hexdigest()
 
 
-def _anki_field(info: dict | None, key: str) -> str:
-    if not info:
-        return ""
-    fields = info.get("fields") or {}
-    return (fields.get(key) or {}).get("value", "") or ""
+def field_action(system_hash: str, target_hash: str, base_hash: str | None) -> str:
+    """单字段三向判定：none/push/pull/same/conflict。"""
+    if base_hash is None:
+        return "same" if system_hash == target_hash else "conflict"
+    system_changed = system_hash != base_hash
+    target_changed = target_hash != base_hash
+    if not system_changed and not target_changed:
+        return "none"
+    if system_changed and not target_changed:
+        return "push"
+    if not system_changed and target_changed:
+        return "pull"
+    return "same" if system_hash == target_hash else "conflict"
 
 
-def _deck_of(row) -> str:
-    return _deck_name(row["module_path"])
+def _markdown_media(*texts: str) -> set[str]:
+    refs: set[str] = set()
+    for text in texts:
+        if not text:
+            continue
+        refs.update(MARKDOWN_IMG_RE.findall(text))
+        refs.update(SOUND_RE.findall(text))
+    return refs
 
 
 def _system_content_hash(front: str, back: str, deck: str) -> str:
     return _content_hash(front, back, deck, _markdown_media(front, back))
-
-
-def takeover(client: AnkiClient, model_name: str, progress: Progress | None = None) -> dict:
-    _notify(progress, "校验 Anki", 0, 1)
-    client.validate(model_name)
-    _notify(progress, "校验 Anki", 1, 1)
-
-    with closing(connect()) as conn:
-        path_group = groups.path_group_map(conn)
-        root_by_name = {
-            row["name"]: int(row["id"])
-            for row in conn.execute(
-                "SELECT id, name FROM module WHERE parent_id IS NULL"
-            )
-        }
-        rows = conn.execute(
-            "SELECT id, front_norm, group_id FROM knowledge_point "
-            "WHERE anki_note_id IS NULL AND status != 'archived'"
-        ).fetchall()
-        pending = {
-            (row["group_id"], row["front_norm"]): row["id"] for row in rows
-        }
-        by_norm: dict[str, list[tuple[int | None, int]]] = {}
-        for row in rows:
-            by_norm.setdefault(row["front_norm"], []).append(
-                (row["group_id"], row["id"])
-            )
-
-    def deck_group(deck: str) -> int | None:
-        path = (deck or "").replace("::", "/")
-        if not path:
-            return None
-        group_id = path_group.get(path)
-        if group_id is None:
-            group_id = path_group.get(path.split("/", 1)[0])
-        if group_id is None:
-            group_id = root_by_name.get(path.split("/", 1)[0])
-        return group_id
-
-    if not pending:
-        return {
-            "scanned_decks": 0,
-            "scanned_notes": 0,
-            "matched": 0,
-            "unmatched_local": 0,
-            "unmatched_anki": 0,
-            "errors": [],
-        }
-
-    decks = client.call("deckNames")
-    note_decks: dict[int, str] = {}
-    errors: list[str] = []
-    for index, deck in enumerate(decks, start=1):
-        try:
-            found = client.call("findNotes", query=f'deck:"{_search_escape(deck)}"')
-            for note_id in found:
-                note_decks[int(note_id)] = deck
-        except AnkiError as exc:
-            errors.append(f"{deck}: {exc}")
-        _notify(progress, "扫描牌组", index, len(decks))
-
-    ordered = sorted(note_decks)
-    matches: list[tuple[int, int, str]] = []
-    scanned = 0
-    for offset in range(0, len(ordered), 500):
-        chunk = ordered[offset : offset + 500]
-        try:
-            infos = client.call("notesInfo", notes=chunk)
-        except AnkiError as exc:
-            errors.append(f"读取笔记失败: {exc}")
-            continue
-        for info in infos:
-            scanned += 1
-            fields = info.get("fields") or {}
-            front = (fields.get("Front") or {}).get("value", "")
-            norm = normalize_front(anki_to_markdown(front))
-            note_id = int(info["noteId"])
-            group_id = deck_group(note_decks.get(note_id, ""))
-            kp_id = pending.pop((group_id, norm), None)
-            if kp_id is None and group_id is None:
-                candidates = [
-                    item
-                    for item in by_norm.get(norm, [])
-                    if pending.get((item[0], norm)) == item[1]
-                ]
-                if len(candidates) == 1:
-                    matched_group, kp_id = candidates[0]
-                    pending.pop((matched_group, norm), None)
-            if kp_id is not None:
-                matches.append((kp_id, note_id, note_decks.get(note_id, "")))
-        _notify(progress, "匹配笔记", min(offset + 500, len(ordered)), len(ordered))
-
-    now = utc_now()
-    with closing(connect()) as conn, conn:
-        for kp_id, note_id, deck in matches:
-            conn.execute(
-                "UPDATE knowledge_point SET anki_note_id = ?, updated_at = ? WHERE id = ?",
-                (note_id, now, kp_id),
-            )
-            conn.execute(
-                "INSERT INTO anki_sync(kp_id, anki_note_id, pushed_deck) VALUES(?, ?, ?) "
-                "ON CONFLICT(kp_id) DO UPDATE SET anki_note_id = excluded.anki_note_id, "
-                "pushed_deck = excluded.pushed_deck, last_error = NULL",
-                (kp_id, note_id, deck),
-            )
-
-    return {
-        "scanned_decks": len(decks),
-        "scanned_notes": scanned,
-        "matched": len(matches),
-        "unmatched_local": len(pending),
-        "unmatched_anki": max(0, scanned - len(matches)),
-        "errors": errors,
-    }
-
-
-def _note_preview(fields: dict, key: str) -> str:
-    value = (fields.get(key) or {}).get("value", "")
-    return _plain_text(anki_to_markdown(value))[:120]
-
-
-def audit(
-    client: AnkiClient,
-    model_name: str,
-    progress: Progress | None = None,
-) -> dict:
-    """体检：找出 Anki 有但系统未关联的 note，以及系统有但 Anki 已删除的关联。"""
-    _notify(progress, "校验 Anki", 0, 1)
-    client.validate(model_name)
-    _notify(progress, "校验 Anki", 1, 1)
-
-    with closing(connect()) as conn:
-        decks = {
-            _deck_name(row["path"])
-            for row in conn.execute("SELECT path FROM module")
-            if row["path"]
-        }
-        decks.update(
-            row["deck"]
-            for row in conn.execute(
-                "SELECT DISTINCT pushed_deck AS deck FROM anki_sync "
-                "WHERE pushed_deck IS NOT NULL AND pushed_deck != ''"
-            )
-        )
-        db_notes = {
-            row["anki_note_id"]: dict(row)
-            for row in conn.execute(
-                """
-                SELECT kp.id, kp.anki_note_id, kp.front_md, kp.status,
-                       m.path AS module_path
-                FROM knowledge_point kp
-                LEFT JOIN module m ON m.id = kp.module_id
-                WHERE kp.anki_note_id IS NOT NULL
-                """
-            )
-        }
-
-    errors: list[str] = []
-    note_decks: dict[int, str] = {}
-    ordered_decks = sorted(decks)
-    for index, deck in enumerate(ordered_decks, start=1):
-        try:
-            found = client.call(
-                "findNotes", query=f'deck:"{_search_escape(deck)}"'
-            )
-            for note_id in found:
-                note_decks[int(note_id)] = deck
-        except AnkiError as exc:
-            errors.append(f"{deck}: {exc}")
-        _notify(progress, "扫描牌组", index, len(ordered_decks))
-
-    ordered = sorted(note_decks)
-    infos_by_id: dict[int, dict] = {}
-    for offset in range(0, len(ordered), 500):
-        chunk = ordered[offset : offset + 500]
-        try:
-            infos = client.call("notesInfo", notes=chunk)
-        except AnkiError as exc:
-            errors.append(f"读取笔记失败: {exc}")
-            continue
-        for info in infos:
-            if info and info.get("modelName"):
-                infos_by_id[int(info["noteId"])] = info
-        _notify(progress, "读取笔记", min(offset + 500, len(ordered)), len(ordered))
-
-    orphans = []
-    orphan_fronts: dict[int, str] = {}
-    for note_id in sorted(infos_by_id, reverse=True):
-        info = infos_by_id[note_id]
-        if note_id in db_notes or info["modelName"] != model_name:
-            continue
-        fields = info.get("fields") or {}
-        front_md = anki_to_markdown((fields.get("Front") or {}).get("value", ""))
-        orphan_fronts[note_id] = normalize_front(front_md)
-        orphans.append(
-            {
-                "note_id": note_id,
-                "deck": note_decks.get(note_id, ""),
-                "model": info["modelName"],
-                "front": _note_preview(fields, "Front"),
-                "back": _note_preview(fields, "Back"),
-            }
-        )
-
-    if orphans:
-        with closing(connect()) as conn:
-            relations = _orphan_relations(conn, orphan_fronts)
-        for item in orphans:
-            item.update(relations.get(item["note_id"], {}))
-    merged_total = sum(1 for item in orphans if item.get("relation") == "merge")
-
-    db_ids = sorted(db_notes)
-    present: set[int] = set()
-    for offset in range(0, len(db_ids), 500):
-        chunk = db_ids[offset : offset + 500]
-        try:
-            infos = client.call("notesInfo", notes=chunk)
-        except AnkiError as exc:
-            errors.append(f"核对关联失败: {exc}")
-            continue
-        for info in infos:
-            if info and info.get("modelName"):
-                present.add(int(info["noteId"]))
-        _notify(progress, "核对关联", min(offset + 500, len(db_ids)), len(db_ids))
-
-    missing = []
-    for note_id in db_ids:
-        if note_id in present:
-            continue
-        row = db_notes[note_id]
-        missing.append(
-            {
-                "kp_id": row["id"],
-                "note_id": note_id,
-                "front": _plain_text(row["front_md"] or "")[:120],
-                "module_path": row["module_path"] or "",
-                "status": row["status"],
-            }
-        )
-
-    return {
-        "decks": ordered_decks,
-        "model": model_name,
-        "scanned_notes": len(infos_by_id),
-        "system_notes": len(db_ids),
-        "orphan_total": len(orphans),
-        "merged_total": merged_total,
-        "missing_total": len(missing),
-        "orphans": orphans[:AUDIT_LIMIT],
-        "missing": missing[:AUDIT_LIMIT],
-        "errors": errors,
-    }
-
-
-def _orphan_relations(conn, fronts: dict[int, str]) -> dict[int, dict]:
-    """为未关联的 note 找出来源合并记录和当前所属卡片。"""
-    if not fronts:
-        return {}
-
-    rows = conn.execute(
-        "SELECT id, action, payload, created_at FROM review_action "
-        "WHERE undone_at IS NULL AND action IN ('merge', 'merge_cards') "
-        "ORDER BY id"
-    ).fetchall()
-
-    merged_into: dict[int, int] = {}
-    note_actions: dict[int, dict] = {}
-    for row in rows:
-        try:
-            payload = json.loads(row["payload"])
-        except (TypeError, json.JSONDecodeError):
-            continue
-        kps = payload.get("kps") or []
-        if len(kps) < 2:
-            continue
-
-        survivor_id = payload.get("survivor_id")
-        if survivor_id is None:
-            alive = [
-                kp["id"]
-                for kp in kps
-                if conn.execute(
-                    "SELECT 1 FROM knowledge_point WHERE id = ?", (kp["id"],)
-                ).fetchone()
-            ]
-            survivor_id = alive[0] if len(alive) == 1 else None
-
-        if survivor_id is not None:
-            for kp in kps:
-                if kp.get("id") != survivor_id:
-                    merged_into[kp["id"]] = survivor_id
-
-        for kp in kps:
-            if survivor_id is not None and kp.get("id") == survivor_id:
-                continue
-            note_id = kp.get("anki_note_id")
-            if note_id not in fronts:
-                continue
-            note_survivor = survivor_id
-            if note_survivor is None and len(kps) == 2:
-                other = next(item for item in kps if item is not kp)
-                note_survivor = other.get("id")
-            note_actions[int(note_id)] = {
-                "merge_action_id": row["id"],
-                "merge_at": row["created_at"],
-                "source_front": (kp.get("front_md") or "")[:120],
-                "survivor_id": note_survivor,
-            }
-
-    def card_info(card_id: int, relation: str, action: dict | None) -> dict:
-        card = conn.execute(
-            "SELECT kp.id, kp.front_md, kp.status, m.path AS module_path "
-            "FROM knowledge_point kp "
-            "LEFT JOIN module m ON m.id = kp.module_id "
-            "WHERE kp.id = ?",
-            (card_id,),
-        ).fetchone()
-        if card is None:
-            return {}
-        result = {
-            "relation": relation,
-            "card_id": card["id"],
-            "card_front": (card["front_md"] or "")[:160],
-            "card_status": card["status"],
-            "module_path": card["module_path"] or "",
-        }
-        if action:
-            result.update(
-                merge_action_id=action["merge_action_id"],
-                merge_at=action["merge_at"],
-                source_front=action["source_front"],
-            )
-        return result
-
-    result: dict[int, dict] = {}
-    for note_id, front_norm in fronts.items():
-        action = note_actions.get(note_id)
-        if action:
-            card_id = action["survivor_id"]
-            seen: set[int] = set()
-            while (
-                card_id is not None
-                and card_id in merged_into
-                and card_id not in seen
-            ):
-                seen.add(card_id)
-                card_id = merged_into[card_id]
-            if card_id is not None:
-                info = card_info(card_id, "merge", action)
-                if info:
-                    result[note_id] = info
-                    continue
-            result[note_id] = {
-                "relation": "merge",
-                "merge_action_id": action["merge_action_id"],
-                "merge_at": action["merge_at"],
-                "source_front": action["source_front"],
-            }
-            continue
-
-        cards = conn.execute(
-            "SELECT id FROM knowledge_point WHERE front_norm = ? LIMIT 2",
-            (front_norm,),
-        ).fetchall()
-        if len(cards) == 1:
-            result[note_id] = card_info(cards[0]["id"], "front", None)
-
-    return result
 
 
 def _plain_text(text: str) -> str:
@@ -489,9 +138,227 @@ def _plain_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _find_note_by_front(
-    client: AnkiClient, deck: str, front: str
+def _anki_field(info: dict | None, key: str) -> str:
+    if not info:
+        return ""
+    fields = info.get("fields") or {}
+    return (fields.get(key) or {}).get("value", "") or ""
+
+
+def _target_field_markdown(info: dict | None, key: str) -> str:
+    return normalize_markdown(anki_to_markdown(_anki_field(info, key)))
+
+
+def _default_error(conn, kp_id: int, target_id: int, message: str) -> None:
+    conn.execute(
+        "UPDATE anki_sync SET last_error = ? WHERE kp_id = ? AND target_id = ?",
+        (message, kp_id, target_id),
+    )
+
+
+def _upsert_sync(
+    conn,
+    kp_id: int,
+    target_id: int,
+    note_id: int | None,
+    deck: str | None,
+    front_base: str | None,
+    back_base: str | None,
+    combined=_UNSET,
+    pushed_at=_UNSET,
+    detached: bool = False,
+    touch: bool = True,
+) -> None:
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO anki_sync
+          (kp_id, target_id, anki_note_id, pushed_hash, pushed_at, pushed_deck,
+           pushed_front_hash, pushed_back_hash, last_error, detached, last_seen_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+        ON CONFLICT(kp_id, target_id) DO UPDATE SET
+          anki_note_id = excluded.anki_note_id,
+          pushed_deck = excluded.pushed_deck,
+          pushed_front_hash = excluded.pushed_front_hash,
+          pushed_back_hash = excluded.pushed_back_hash,
+          last_error = NULL,
+          detached = excluded.detached,
+          last_seen_at = COALESCE(excluded.last_seen_at, anki_sync.last_seen_at)
+        """,
+        (
+            kp_id,
+            target_id,
+            note_id,
+            combined if combined is not _UNSET else None,
+            pushed_at if pushed_at is not _UNSET else None,
+            deck,
+            front_base,
+            back_base,
+            1 if detached else 0,
+            now if touch else None,
+        ),
+    )
+    if combined is not _UNSET:
+        conn.execute(
+            "UPDATE anki_sync SET pushed_hash = ?, pushed_at = ? "
+            "WHERE kp_id = ? AND target_id = ?",
+            (
+                combined,
+                pushed_at if pushed_at is not _UNSET else now,
+                kp_id,
+                target_id,
+            ),
+        )
+
+
+def _set_last_seen(conn, kp_id: int, target_id: int) -> None:
+    conn.execute(
+        "UPDATE anki_sync SET last_seen_at = ? WHERE kp_id = ? AND target_id = ?",
+        (utc_now(), kp_id, target_id),
+    )
+
+
+def _record_flag(conn, kp_id: int, target_id: int, flag: int) -> None:
+    conn.execute(
+        "INSERT INTO anki_sync(kp_id, target_id, anki_flag) VALUES(?, ?, ?) "
+        "ON CONFLICT(kp_id, target_id) DO UPDATE SET anki_flag = excluded.anki_flag",
+        (kp_id, target_id, flag),
+    )
+
+
+def _load_rows(conn, target_id: int, statuses: tuple[str, ...]):
+    placeholders = ",".join("?" for _ in statuses)
+    return conn.execute(
+        f"""
+        SELECT kp.id, kp.front_md, kp.back_md, kp.front_norm, kp.status,
+               kp.group_id, kp.module_id, m.path AS module_path,
+               s.anki_note_id, s.pushed_hash, s.pushed_deck,
+               s.pushed_front_hash, s.pushed_back_hash, s.detached,
+               s.force_push, s.anki_flag, s.flag_clear_pending
+        FROM knowledge_point kp
+        JOIN group_target gt
+          ON gt.group_id = kp.group_id AND gt.target_id = ?
+        LEFT JOIN module m ON m.id = kp.module_id
+        LEFT JOIN anki_sync s
+          ON s.kp_id = kp.id AND s.target_id = ?
+        WHERE kp.status IN ({placeholders})
+        ORDER BY kp.id
+        """,
+        (target_id, target_id, *statuses),
+    ).fetchall()
+
+
+def _pending_conflict_cards(conn) -> set[int]:
+    return {
+        int(row["kp_id"])
+        for row in conn.execute(
+            "SELECT DISTINCT kp_id FROM sync_conflict WHERE status = 'pending'"
+        )
+    }
+
+
+def _fetch_notes(
+    client: AnkiClient,
+    note_ids: set[int],
+    progress: Progress | None = None,
+    phase: str = "读取 Anki",
+) -> dict[int, dict]:
+    ordered = sorted(int(note) for note in note_ids)
+    infos: dict[int, dict] = {}
+    for offset in range(0, len(ordered), 500):
+        chunk = ordered[offset : offset + 500]
+        try:
+            data = client.call("notesInfo", notes=chunk)
+        except AnkiError as exc:
+            raise AnkiError(f"读取 Anki 笔记失败：{exc}") from exc
+        for info in data or []:
+            if info and info.get("noteId"):
+                infos[int(info["noteId"])] = info
+        _notify(progress, phase, min(offset + 500, len(ordered)), len(ordered))
+    return infos
+
+
+def _note_decks(client: AnkiClient, infos: dict[int, dict]) -> dict[int, str]:
+    """通过 notesInfo 的 cards 批量读取笔记当前牌组。"""
+    card_note: dict[int, int] = {}
+    for note_id, info in infos.items():
+        for card_id in info.get("cards") or []:
+            card_note[int(card_id)] = int(note_id)
+    if not card_note:
+        return {}
+    try:
+        cards = client.call("cardsInfo", cards=list(card_note)) or []
+    except AnkiError:
+        return {}
+    decks: dict[int, str] = {}
+    for card in cards:
+        note_id = card_note.get(int(card.get("cardId") or 0))
+        if note_id is not None and card.get("deckName"):
+            decks.setdefault(note_id, card["deckName"])
+    return decks
+
+
+def _fetch_note_flags(
+    client: AnkiClient,
+    note_ids: set[int],
+    progress: Progress | None = None,
+) -> dict[int, tuple[int, list[int]]]:
+    """返回 note_id -> (旗帜颜色, 带旗卡片)。基于搜索，不依赖 notesInfo 的 cards。"""
+    _ = progress
+    wanted = {int(note) for note in note_ids}
+    found: dict[int, tuple[int, list[int]]] = {}
+    if not wanted:
+        return found
+    for value in range(1, 8):
+        try:
+            cards = client.call("findCards", query=f"flag:{value}") or []
+            if not cards:
+                continue
+            notes = client.call(
+                "cardsToNotes", cards=[int(card) for card in cards]
+            ) or []
+        except AnkiError as exc:
+            raise AnkiError(f"读取 Anki 旗帜失败：{exc}") from exc
+        for card_id, note_id in zip(cards, notes):
+            note_id = int(note_id)
+            if note_id not in wanted:
+                continue
+            current = found.get(note_id)
+            if current is None:
+                found[note_id] = (value, [int(card_id)])
+            else:
+                found[note_id] = (max(current[0], value), [*current[1], int(card_id)])
+    return found
+
+
+def _ensure_deck(client: AnkiClient, decks: set[str], deck: str) -> None:
+    if deck not in decks:
+        client.call("createDeck", deck=deck)
+        decks.add(deck)
+
+
+def _add_note(
+    client: AnkiClient, model_name: str, deck: str, front: str, back: str
 ) -> int | None:
+    return client.call(
+        "addNote",
+        note={
+            "deckName": deck,
+            "modelName": model_name,
+            "fields": {"Front": front, "Back": back},
+            "tags": [],
+            "options": {"allowDuplicate": False, "duplicateScope": "deck"},
+        },
+    )
+
+
+def _move_to_deck(client: AnkiClient, note_id: int, deck: str) -> None:
+    cards = client.call("findCards", query=f"nid:{note_id}")
+    if cards:
+        client.call("changeDeck", cards=cards, deck=deck)
+
+
+def _find_note_by_front(client: AnkiClient, deck: str, front: str) -> int | None:
     """addNote 返回空（重复）时，按正面文本在牌组内找回已有笔记。"""
     query_text = _plain_text(front)[:60]
     if not query_text:
@@ -514,107 +381,6 @@ def _find_note_by_front(
         if normalize_front(anki_to_markdown(value)) == target:
             return int(info["noteId"])
     return None
-
-
-def _load_sync_rows(
-    conn,
-    only_ready: bool,
-    linked_only: bool = False,
-    exclude_archived: bool = False,
-):
-    where = []
-    if only_ready:
-        where.append("kp.status = 'ready'")
-    if exclude_archived:
-        where.append("kp.status != 'archived'")
-    if linked_only:
-        where.append(
-            "(kp.anki_note_id IS NOT NULL OR s.anki_note_id IS NOT NULL)"
-        )
-    clause = f"WHERE {' AND '.join(where)}" if where else ""
-    return conn.execute(
-        f"""
-        SELECT kp.id, kp.front_md, kp.back_md, kp.status, kp.anki_note_id,
-               m.path AS module_path,
-               s.pushed_hash, s.pushed_deck,
-               s.pushed_front_hash, s.pushed_back_hash,
-               s.anki_note_id AS sync_note_id
-        FROM knowledge_point kp
-        LEFT JOIN module m ON m.id = kp.module_id
-        LEFT JOIN anki_sync s ON s.kp_id = kp.id
-        {clause}
-        ORDER BY kp.id
-        """
-    ).fetchall()
-
-
-def _fetch_notes(
-    client: AnkiClient,
-    note_ids: set[int],
-    progress: Progress | None = None,
-    phase: str = "读取 Anki",
-) -> dict[int, dict]:
-    ordered = sorted(note_ids)
-    infos: dict[int, dict] = {}
-    for offset in range(0, len(ordered), 500):
-        chunk = ordered[offset : offset + 500]
-        try:
-            data = client.call("notesInfo", notes=chunk)
-        except AnkiError as exc:
-            raise AnkiError(f"读取 Anki 笔记失败：{exc}") from exc
-        for info in data or []:
-            if info and info.get("noteId"):
-                infos[int(info["noteId"])] = info
-        _notify(progress, phase, min(offset + 500, len(ordered)), len(ordered))
-    return infos
-
-
-def _fetch_note_flags(
-    client: AnkiClient,
-    note_ids: set[int],
-    progress: Progress | None = None,
-) -> dict[int, tuple[int, list[int]]]:
-    """返回 note_id -> (旗帜颜色, 带旗卡片)。基于搜索，不依赖 notesInfo 的 cards。"""
-    _ = progress
-    wanted = {int(note) for note in note_ids}
-    found: dict[int, tuple[int, list[int]]] = {}
-    if not wanted:
-        return found
-    for value in range(1, 8):
-        try:
-            cards = client.call("findCards", query=f"flag:{value}") or []
-            if not cards:
-                continue
-            notes = client.call("cardsToNotes", cards=[int(card) for card in cards]) or []
-        except AnkiError as exc:
-            raise AnkiError(f"读取 Anki 旗帜失败：{exc}") from exc
-        for card_id, note_id in zip(cards, notes):
-            note_id = int(note_id)
-            if note_id not in wanted:
-                continue
-            current = found.get(note_id)
-            if current is None:
-                found[note_id] = (value, [int(card_id)])
-            else:
-                found[note_id] = (
-                    max(current[0], value),
-                    [*current[1], int(card_id)],
-                )
-    return found
-
-
-def _record_anki_flag(conn, kp_id: int, flag: int) -> None:
-    conn.execute(
-        "INSERT INTO anki_sync(kp_id, anki_flag) VALUES(?, ?) "
-        "ON CONFLICT(kp_id) DO UPDATE SET anki_flag = excluded.anki_flag",
-        (kp_id, flag),
-    )
-
-
-def _ensure_deck(client: AnkiClient, decks: set[str], deck: str) -> None:
-    if deck not in decks:
-        client.call("createDeck", deck=deck)
-        decks.add(deck)
 
 
 def _record_media(conn, name: str, raw: bytes) -> None:
@@ -655,154 +421,307 @@ def _pull_media(conn, client: AnkiClient, refs: set[str]) -> list[str]:
     return errors
 
 
-def _upsert_conflict(
+def _push_media(
+    client: AnkiClient, refs: set[str]
+) -> tuple[int, set[str], list[str]]:
+    """上传缺失媒体；目标已有同名但内容不同则记为冲突，不覆盖。"""
+    errors: list[str] = []
+    conflicts: set[str] = set()
+    if not refs:
+        return 0, conflicts, errors
+    try:
+        remote = set(client.call("getMediaFilesNames", pattern="*") or [])
+    except AnkiError as exc:
+        return 0, set(refs), [f"无法读取目标媒体列表，已暂缓含媒体的卡片: {exc}"]
+
+    uploaded = 0
+    for name in sorted(refs):
+        path = config.MEDIA_DIR / name
+        if not path.is_file():
+            errors.append(f"媒体缺失: {name}")
+            continue
+        raw = path.read_bytes()
+        if name in remote:
+            try:
+                data = client.call("retrieveMediaFile", filename=name)
+                existing = base64.b64decode(data) if data else b""
+            except (AnkiError, ValueError, TypeError):
+                existing = None
+            if existing is not None and existing != raw:
+                conflicts.add(name)
+            continue
+        try:
+            data = base64.b64encode(raw).decode("ascii")
+            client.call("storeMediaFile", filename=name, data=data)
+            uploaded += 1
+        except AnkiError as exc:
+            errors.append(f"媒体 {name}: {exc}")
+    return uploaded, conflicts, errors
+
+
+def _front_collision(conn, kp_id: int, group_id: int | None, front_norm: str):
+    return conn.execute(
+        "SELECT id FROM knowledge_point WHERE front_norm = ? "
+        "AND group_id IS ? AND id != ?",
+        (front_norm, group_id, kp_id),
+    ).fetchone()
+
+
+def _record_conflict(
     conn,
+    target_id: int,
     kp_id: int,
-    note_id: int,
-    field: str,
-    base_hash: str | None,
-    system_value: str,
-    anki_value: str,
-    system_hash: str,
-    anki_hash: str,
+    note_id: int | None,
+    kind: str,
     note: str,
-) -> None:
+    system_front: str,
+    system_back: str,
+    system_deck: str | None,
+    target_front: str | None,
+    target_back: str | None,
+    target_deck: str | None,
+    base_front: str | None,
+    base_back: str | None,
+) -> bool:
+    """整卡冲突：每张卡最多一条待处理记录。返回是否新建。"""
     existing = conn.execute(
-        "SELECT id FROM anki_conflict WHERE kp_id = ? AND field = ? AND status = 'pending'",
-        (kp_id, field),
+        "SELECT id FROM sync_conflict WHERE kp_id = ? AND status = 'pending'",
+        (kp_id,),
     ).fetchone()
     if existing:
-        conn.execute(
-            "UPDATE anki_conflict SET anki_note_id = ?, base_hash = ?, system_value = ?, "
-            "anki_value = ?, system_hash = ?, anki_hash = ?, note = ? WHERE id = ?",
-            (
-                note_id,
-                base_hash,
-                system_value,
-                anki_value,
-                system_hash,
-                anki_hash,
-                note,
-                existing["id"],
-            ),
-        )
-    else:
-        conn.execute(
-            "INSERT INTO anki_conflict"
-            "(kp_id, anki_note_id, field, base_hash, system_value, anki_value, "
-            "system_hash, anki_hash, note, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                kp_id,
-                note_id,
-                field,
-                base_hash,
-                system_value,
-                anki_value,
-                system_hash,
-                anki_hash,
-                note,
-                utc_now(),
-            ),
-        )
-
-
-def _close_conflict(conn, kp_id: int, field: str) -> None:
-    """两侧内容已一致时自动关闭遗留冲突。"""
+        return False
     conn.execute(
-        "UPDATE anki_conflict SET status = 'resolved', resolution = 'system', "
-        "resolved_at = ?, note = COALESCE(note, '两侧内容已一致，自动关闭') "
-        "WHERE kp_id = ? AND field = ? AND status = 'pending'",
-        (utc_now(), kp_id, field),
+        """
+        INSERT INTO sync_conflict
+          (kp_id, target_id, anki_note_id, kind, system_front, system_back,
+           system_deck, target_front, target_back, target_deck,
+           base_front_hash, base_back_hash, note, created_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            kp_id,
+            target_id,
+            note_id,
+            kind,
+            system_front,
+            system_back,
+            system_deck,
+            target_front,
+            target_back,
+            target_deck,
+            base_front,
+            base_back,
+            note,
+            utc_now(),
+        ),
+    )
+    return True
+
+
+def _module_for_deck(conn, target_id: int, group_id: int | None, deck: str):
+    """把目标牌组映射为模块；不在组子树内返回 None。"""
+    from ..collect.merge import ensure_module
+
+    group = groups.get_group(conn, group_id)
+    if group is None:
+        return None
+    path = (deck or "").replace("::", "/").strip("/")
+    root = group["path"]
+    if path == root:
+        return int(group["id"])
+    if not path.startswith(root + "/"):
+        return None
+    return ensure_module(conn, path[len(root) + 1 :], "anki", group)
+
+
+def _detach(conn, kp_id: int, target_id: int) -> None:
+    conn.execute(
+        "UPDATE anki_sync SET detached = 1, last_seen_at = ? "
+        "WHERE kp_id = ? AND target_id = ?",
+        (utc_now(), kp_id, target_id),
     )
 
 
-def _save_baseline(
+def _clients_for_targets(guard: bool, exclude: int | None = None) -> dict[int, AnkiClient]:
+    with closing(connect()) as conn:
+        rows = targets.list_targets(conn, enabled_only=True)
+    return {
+        int(row["id"]): targets.client_for(row, guard)
+        for row in rows
+        if int(row["id"]) != exclude
+    }
+
+
+def _propagate_delete(
     conn,
     kp_id: int,
-    note_id: int,
-    deck: str | None,
-    front_base: str | None,
-    back_base: str | None,
-    combined: str | None,
-    pushed_at: str | None = None,
-) -> None:
-    if combined is None:
+    source_target_id: int,
+    clients: dict[int, AnkiClient],
+    errors: list[str],
+) -> int:
+    """确认删除后归档卡片，并从其他目标删除同一张卡。"""
+    now = utc_now()
+    conn.execute(
+        "UPDATE knowledge_point SET status = 'archived', updated_at = ? WHERE id = ?",
+        (now, kp_id),
+    )
+    rows = conn.execute(
+        "SELECT target_id, anki_note_id FROM anki_sync "
+        "WHERE kp_id = ? AND anki_note_id IS NOT NULL",
+        (kp_id,),
+    ).fetchall()
+    deleted = 0
+    for row in rows:
+        target_id = int(row["target_id"])
+        note_id = int(row["anki_note_id"])
+        if target_id == source_target_id:
+            continue
+        client = clients.get(target_id)
+        if client is None:
+            continue
+        try:
+            client.call("deleteNotes", timeout=15, notes=[note_id])
+            deleted += 1
+        except AnkiError as exc:
+            if "not found" not in str(exc).lower():
+                errors.append(f"卡片 {kp_id}: 目标 {target_id} 删除失败：{exc}")
+    conn.execute("DELETE FROM anki_sync WHERE kp_id = ?", (kp_id,))
+    conn.execute(
+        "DELETE FROM sync_conflict WHERE kp_id = ? AND status = 'pending'",
+        (kp_id,),
+    )
+    return deleted
+
+
+def _delete_archived_notes(
+    conn, client: AnkiClient, target_id: int, progress: Progress | None
+) -> tuple[int, list[str]]:
+    rows = conn.execute(
+        """
+        SELECT s.kp_id, s.anki_note_id
+        FROM anki_sync s JOIN knowledge_point kp ON kp.id = s.kp_id
+        WHERE s.target_id = ? AND s.anki_note_id IS NOT NULL
+          AND kp.status = 'archived'
+        ORDER BY s.kp_id
+        """,
+        (target_id,),
+    ).fetchall()
+    deleted = 0
+    errors: list[str] = []
+    for index, row in enumerate(rows, start=1):
+        note_id = int(row["anki_note_id"])
+        try:
+            client.call("deleteNotes", timeout=15, notes=[note_id])
+        except AnkiError as exc:
+            if "not found" not in str(exc).lower():
+                errors.append(f"归档卡片 {row['kp_id']}: {exc}")
+                conn.execute(
+                    "UPDATE anki_sync SET last_error = ? "
+                    "WHERE kp_id = ? AND target_id = ?",
+                    (str(exc), row["kp_id"], target_id),
+                )
+                _notify(progress, "清理归档", index, len(rows))
+                continue
         conn.execute(
-            "INSERT INTO anki_sync"
-            "(kp_id, anki_note_id, pushed_front_hash, pushed_back_hash, "
-            "pushed_deck, last_error) VALUES (?, ?, ?, ?, ?, NULL) "
-            "ON CONFLICT(kp_id) DO UPDATE SET anki_note_id = excluded.anki_note_id, "
-            "pushed_front_hash = excluded.pushed_front_hash, "
-            "pushed_back_hash = excluded.pushed_back_hash, "
-            "pushed_deck = excluded.pushed_deck, last_error = NULL",
-            (kp_id, note_id, front_base, back_base, deck),
+            "DELETE FROM anki_sync WHERE kp_id = ? AND target_id = ?",
+            (row["kp_id"], target_id),
         )
-    else:
         conn.execute(
-            "INSERT INTO anki_sync"
-            "(kp_id, anki_note_id, pushed_hash, pushed_deck, pushed_at, "
-            "pushed_front_hash, pushed_back_hash, last_error) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL) "
-            "ON CONFLICT(kp_id) DO UPDATE SET anki_note_id = excluded.anki_note_id, "
-            "pushed_hash = excluded.pushed_hash, "
-            "pushed_deck = excluded.pushed_deck, "
-            "pushed_at = excluded.pushed_at, "
-            "pushed_front_hash = excluded.pushed_front_hash, "
-            "pushed_back_hash = excluded.pushed_back_hash, last_error = NULL",
-            (kp_id, note_id, combined, deck, pushed_at, front_base, back_base),
+            "DELETE FROM sync_conflict WHERE kp_id = ? AND status = 'pending'",
+            (row["kp_id"],),
         )
+        deleted += 1
+        _notify(progress, "清理归档", index, len(rows))
+    return deleted, errors
 
 
-def _field_action(sys_hash: str, anki_hash: str, base_hash: str) -> str:
-    sys_changed = sys_hash != base_hash
-    anki_changed = anki_hash != base_hash
-    if not sys_changed and not anki_changed:
-        return "none"
-    if sys_changed and not anki_changed:
-        return "push"
-    if not sys_changed and anki_changed:
-        return "pull"
-    return "same" if sys_hash == anki_hash else "conflict"
+def _clear_pending_flags(
+    conn, client: AnkiClient, target_id: int, progress: Progress | None
+) -> tuple[int, list[str]]:
+    rows = conn.execute(
+        """
+        SELECT s.kp_id, s.anki_note_id, s.flag_clear_pending
+        FROM anki_sync s JOIN knowledge_point kp ON kp.id = s.kp_id
+        WHERE s.target_id = ? AND s.flag_clear_pending > 0
+          AND s.anki_note_id IS NOT NULL AND kp.status != 'archived'
+        ORDER BY s.kp_id
+        """,
+        (target_id,),
+    ).fetchall()
+    if not rows:
+        return 0, []
+
+    note_ids = {int(row["anki_note_id"]) for row in rows}
+    infos = _fetch_notes(client, note_ids, progress, phase="读取旗帜")
+    note_flags = _fetch_note_flags(client, note_ids, progress)
+
+    cleared = 0
+    errors: list[str] = []
+    for index, row in enumerate(rows, start=1):
+        kp_id = int(row["kp_id"])
+        note_id = int(row["anki_note_id"])
+        pending = int(row["flag_clear_pending"])
+        info = infos.get(note_id)
+        if info is None:
+            conn.execute(
+                "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
+                "WHERE kp_id = ? AND target_id = ?",
+                (kp_id, target_id),
+            )
+            _notify(progress, "清除旗帜", index, len(rows))
+            continue
+        current, cards = note_flags.get(note_id, (0, []))
+        if current == 0:
+            conn.execute(
+                "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
+                "WHERE kp_id = ? AND target_id = ?",
+                (kp_id, target_id),
+            )
+            _notify(progress, "清除旗帜", index, len(rows))
+            continue
+        if current != pending:
+            conn.execute(
+                "UPDATE anki_sync SET anki_flag = ?, flag_clear_pending = 0 "
+                "WHERE kp_id = ? AND target_id = ?",
+                (current, kp_id, target_id),
+            )
+            errors.append(f"卡片 {kp_id}: 目标旗帜已变为 {current}，未清除")
+            _notify(progress, "清除旗帜", index, len(rows))
+            continue
+        try:
+            for card_id in cards:
+                client.call(
+                    "setSpecificValueOfCard",
+                    card=card_id,
+                    keys=["flags"],
+                    newValues=["0"],
+                )
+        except AnkiError as exc:
+            errors.append(f"卡片 {kp_id}: 清除旗帜失败：{exc}")
+            _notify(progress, "清除旗帜", index, len(rows))
+            continue
+        conn.execute(
+            "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
+            "WHERE kp_id = ? AND target_id = ?",
+            (kp_id, target_id),
+        )
+        cleared += 1
+        _notify(progress, "清除旗帜", index, len(rows))
+    return cleared, errors
 
 
-def _action_for(sys_hash: str, anki_hash: str, base_hash: str | None) -> str:
-    if base_hash is None:
-        return "same" if sys_hash == anki_hash else "conflict"
-    return _field_action(sys_hash, anki_hash, base_hash)
-
-
-def _conflict_reason(
-    field: str, sys_hash: str, anki_hash: str, base_hash: str | None, extra: str = ""
-) -> str:
-    if extra:
-        return extra
-    if base_hash is None:
-        return "历史数据缺少字段基线，按安全模式记录"
-    sys_changed = sys_hash != base_hash
-    anki_changed = anki_hash != base_hash
-    if sys_changed and anki_changed:
-        return f"系统与 Anki 都修改了{FIELD_LABELS[field]}"
-    if field == "front":
-        return "Anki 修改了正面，未自动采纳"
-    return "Anki 修改了背面"
-
-
-def _sync_card(
+def _merge_existing(
     conn,
     client: AnkiClient,
     model_name: str,
+    target_id: int,
     row,
-    info: dict | None,
-    mode: str,
+    info: dict,
+    deck: str,
     decks: set[str],
-) -> tuple[dict, list[str]]:
-    """按字段判定并执行推送/回写/记录冲突。mode 为 push 或 pull。"""
-    kp_id = row["id"]
-    note_id = row["anki_note_id"] or row["sync_note_id"]
-    deck = _deck_of(row)
-    front = row["front_md"] or ""
-    back = row["back_md"] or ""
+    mode: str,
+    media_conflicts: set[str],
+) -> dict:
     result = {
         "changed": 0,
         "added": 0,
@@ -810,591 +729,1069 @@ def _sync_card(
         "pulled": 0,
         "conflicts": 0,
         "skipped": False,
+        "detached": 0,
     }
-    errors: list[str] = []
+    kp_id = int(row["id"])
+    note_id = int(row["anki_note_id"])
+    group_id = row["group_id"]
+    system_deck = _deck_name(row["module_path"])
+    front = row["front_md"] or ""
+    back = row["back_md"] or ""
+    target_front = _target_field_markdown(info, "Front")
+    target_back = _target_field_markdown(info, "Back")
 
-    pending = {
-        item["field"]
-        for item in conn.execute(
-            "SELECT field FROM anki_conflict WHERE kp_id = ? AND status = 'pending'",
-            (kp_id,),
-        )
-    }
-    if mode == "push" and pending:
-        result["skipped"] = True
-        return result, errors
+    system_front_hash = field_hash(front)
+    system_back_hash = field_hash(back)
+    target_front_hash = field_hash(target_front)
+    target_back_hash = field_hash(target_back)
 
-    sys_front_hash = field_hash(front)
-    sys_back_hash = field_hash(back)
+    base_front = row["pushed_front_hash"]
+    base_back = row["pushed_back_hash"]
+    if (base_front is None or base_back is None) and row["pushed_hash"]:
+        if row["pushed_hash"] == _system_content_hash(front, back, system_deck):
+            base_front = base_front or system_front_hash
+            base_back = base_back or system_back_hash
 
-    if note_id is None:
-        if mode != "push":
-            result["skipped"] = True
-            return result, errors
-        _ensure_deck(client, decks, deck)
-        new_id = _add_note(
-            client, model_name, {"deck": deck}, {"Front": front, "Back": back}
-        )
-        reused = False
-        if new_id is None:
-            new_id = _find_note_by_front(client, deck, front)
-            if new_id is None:
-                raise AnkiError("addNote 返回空且未找到同名笔记")
-            reused = True
-        now = utc_now()
-        conn.execute(
-            "UPDATE knowledge_point SET anki_note_id = ?, updated_at = ? WHERE id = ?",
-            (new_id, now, kp_id),
-        )
-        result["changed"] = 1
-        if reused:
-            result["updated"] = 1
-            _save_baseline(conn, kp_id, new_id, deck, sys_front_hash, None, None)
+    front_action = field_action(system_front_hash, target_front_hash, base_front)
+    back_action = field_action(system_back_hash, target_back_hash, base_back)
+    force = mode == "push" and bool(row["force_push"])
+    if force:
+        front_action = "same" if system_front_hash == target_front_hash else "push"
+        back_action = "same" if system_back_hash == target_back_hash else "push"
+    if mode != "push":
+        if front_action == "push":
+            front_action = "none"
+        if back_action == "push":
+            back_action = "none"
+
+    # 组内移动：目标侧牌组变化写回模块，再分发到其他目标
+    if (
+        mode == "push"
+        and row["pushed_deck"]
+        and deck != row["pushed_deck"]
+        and not force
+    ):
+        moved_module = _module_for_deck(conn, target_id, group_id, deck)
+        if moved_module is not None and moved_module != row["module_id"]:
+            conn.execute(
+                "UPDATE knowledge_point SET module_id = ?, updated_at = ? WHERE id = ?",
+                (moved_module, utc_now(), kp_id),
+            )
+            system_deck = deck
+            result["changed"] = 1
+
+    back_note = ""
+    if back_action == "pull" and not target_back:
+        back_action = "conflict"
+        back_note = "目标背面为空，未自动采纳"
+
+    if back_action == "pull":
+        media_errors = _pull_media(conn, client, local_media_refs(target_back))
+        if media_errors:
+            back_action = "conflict"
+            back_note = "；".join(media_errors)
+
+    if front_action == "pull":
+        norm = normalize_front(target_front)
+        if not norm:
+            front_action = "conflict"
+            back_note = back_note or "目标正面为空，未自动采纳"
         else:
-            result["added"] = 1
-            _save_baseline(
-                conn,
-                kp_id,
-                new_id,
-                deck,
-                sys_front_hash,
-                sys_back_hash,
-                _system_content_hash(front, back, deck),
-                now,
-            )
-        return result, errors
+            collision = _front_collision(conn, kp_id, group_id, norm)
+            if collision is not None:
+                front_action = "conflict"
+                back_note = f"目标正面与卡片 #{collision['id']} 重复"
 
-    if info is None:
-        if mode != "push":
-            return result, [f"卡片 {kp_id}: Anki note {note_id} 不存在"]
-        result["changed"] = 1
-        reused = False
-        try:
-            client.call(
-                "updateNoteFields",
-                note={"id": note_id, "fields": {"Front": front, "Back": back}},
-            )
-            result["updated"] = 1
-        except AnkiError as exc:
-            if "not found" not in str(exc).lower():
-                raise
-            _ensure_deck(client, decks, deck)
-            new_id = _add_note(
-                client, model_name, {"deck": deck}, {"Front": front, "Back": back}
-            )
-            if new_id is None:
-                new_id = _find_note_by_front(client, deck, front)
-                if new_id is None:
-                    raise exc
-                reused = True
-                result["updated"] = 1
-            else:
-                result["added"] = 1
-            note_id = new_id
-        conn.execute(
-            "UPDATE knowledge_point SET anki_note_id = ?, updated_at = ? WHERE id = ?",
-            (note_id, utc_now(), kp_id),
-        )
-        back_base = None if reused else sys_back_hash
-        combined = (
-            None
-            if reused
-            else _system_content_hash(front, back, deck)
-        )
-        _save_baseline(
+    conflict = front_action == "conflict" or back_action == "conflict"
+    if conflict:
+        _record_conflict(
             conn,
+            target_id,
             kp_id,
             note_id,
+            "duplicate" if "重复" in back_note else "edit",
+            back_note or "目标与系统都修改了同一张卡片",
+            front,
+            back,
+            system_deck,
+            target_front,
+            target_back,
             deck,
-            sys_front_hash,
-            back_base,
-            combined,
-            None if reused else utc_now(),
+            base_front,
+            base_back,
         )
-        if row["pushed_deck"] != deck:
-            _ensure_deck(client, decks, deck)
-            _move_to_deck(client, note_id, deck)
-        return result, errors
-
-    anki_front = _anki_field(info, "Front")
-    anki_back = _anki_field(info, "Back")
-    anki_front_md = anki_to_markdown(anki_front)
-    anki_back_md = anki_to_markdown(anki_back)
-    anki_front_hash = field_hash(anki_front)
-    anki_back_hash = field_hash(anki_back)
-
-    base_f = row["pushed_front_hash"]
-    base_b = row["pushed_back_hash"]
-    if base_f is None or base_b is None:
-        current_full = _system_content_hash(front, back, deck)
-        if row["pushed_hash"] and row["pushed_hash"] == current_full:
-            if base_f is None:
-                base_f = sys_front_hash
-            if base_b is None:
-                base_b = sys_back_hash
-
-    if "front" in pending:
-        front_action = "same" if sys_front_hash == anki_front_hash else "conflict"
-    else:
-        front_action = _action_for(sys_front_hash, anki_front_hash, base_f)
-    if "back" in pending:
-        back_action = "same" if sys_back_hash == anki_back_hash else "conflict"
-    else:
-        back_action = _action_for(sys_back_hash, anki_back_hash, base_b)
-
-    back_reason = ""
-    if front_action == "pull":
-        front_action = "conflict"
-    if back_action == "pull":
-        if not normalize_markdown(anki_back):
-            back_action = "conflict"
-            back_reason = "Anki 背面为空，未自动回写"
-        else:
-            media_errors = _pull_media(
-                conn, client, local_media_refs(anki_back_md)
-            )
-            if media_errors:
-                back_action = "conflict"
-                back_reason = "；".join(media_errors)
-            else:
-                back = anki_back_md
-                sys_back_hash = field_hash(back)
-                conn.execute(
-                    "UPDATE knowledge_point SET back_md = ?, updated_at = ? WHERE id = ?",
-                    (back, utc_now(), kp_id),
-                )
-                base_b = sys_back_hash
-                result["pulled"] = 1
-                result["changed"] = 1
+        result["conflicts"] = 1
+        result["changed"] = 1
+        return result
 
     fields: dict[str, str] = {}
     if front_action == "push":
         fields["Front"] = front
     if back_action == "push":
         fields["Back"] = back
+
+    if fields:
+        bad_media = _markdown_media(
+            fields.get("Front", ""), fields.get("Back", "")
+        ) & media_conflicts
+        if bad_media:
+            _record_conflict(
+                conn,
+                target_id,
+                kp_id,
+                note_id,
+                "media",
+                f"媒体 {', '.join(sorted(bad_media))} 在目标中内容不同，未覆盖",
+                front,
+                back,
+                system_deck,
+                target_front,
+                target_back,
+                deck,
+                base_front,
+                base_back,
+            )
+            result["conflicts"] = 1
+            result["changed"] = 1
+            return result
+
+    applied_front = False
+    applied_back = False
+    if front_action == "pull":
+        conn.execute(
+            "UPDATE knowledge_point SET front_md = ?, front_norm = ?, updated_at = ? "
+            "WHERE id = ?",
+            (target_front, normalize_front(target_front), utc_now(), kp_id),
+        )
+        front = target_front
+        system_front_hash = target_front_hash
+        applied_front = True
+    if back_action == "pull":
+        conn.execute(
+            "UPDATE knowledge_point SET back_md = ?, updated_at = ? WHERE id = ?",
+            (target_back, utc_now(), kp_id),
+        )
+        back = target_back
+        system_back_hash = target_back_hash
+        applied_back = True
+    if applied_front or applied_back:
+        result["pulled"] = 1
+        result["changed"] = 1
+
     reused_note = False
     if fields:
         try:
             client.call(
-                "updateNoteFields", note={"id": note_id, "fields": fields}
+                "updateNoteFields",
+                note={"id": note_id, "fields": fields},
             )
         except AnkiError as exc:
             if "not found" not in str(exc).lower():
                 raise
-            _ensure_deck(client, decks, deck)
-            new_id = _add_note(
-                client, model_name, {"deck": deck}, {"Front": front, "Back": back}
-            )
+            _ensure_deck(client, decks, system_deck)
+            new_id = _add_note(client, model_name, system_deck, front, back)
             if new_id is None:
-                new_id = _find_note_by_front(client, deck, front)
+                new_id = _find_note_by_front(client, system_deck, front)
                 if new_id is None:
                     raise exc
                 reused_note = True
-            else:
-                result["added"] = 1
-            note_id = new_id
-            conn.execute(
-                "UPDATE knowledge_point SET anki_note_id = ?, updated_at = ? WHERE id = ?",
-                (note_id, utc_now(), kp_id),
-            )
-            if reused_note:
-                front_action = "same"
-                back_action = "none"
-            else:
-                front_action = back_action = "push"
+            note_id = int(new_id)
         result["updated"] = 1
         result["changed"] = 1
 
-    if mode == "push" and row["pushed_deck"] != deck:
-        _ensure_deck(client, decks, deck)
-        _move_to_deck(client, note_id, deck)
+    if mode == "push" and row["pushed_deck"] and row["pushed_deck"] != system_deck:
+        _ensure_deck(client, decks, system_deck)
+        _move_to_deck(client, note_id, system_deck)
         result["changed"] = 1
 
-    if front_action == "conflict":
-        _upsert_conflict(
-            conn,
-            kp_id,
-            note_id,
-            "front",
-            base_f,
-            front,
-            anki_front_md,
-            sys_front_hash,
-            anki_front_hash,
-            _conflict_reason("front", sys_front_hash, anki_front_hash, base_f),
-        )
-        result["conflicts"] += 1
-        result["changed"] = 1
-    else:
-        _close_conflict(conn, kp_id, "front")
+    if force:
+        front_action = "same"
+        back_action = "same"
 
-    if back_action == "conflict":
-        _upsert_conflict(
-            conn,
-            kp_id,
-            note_id,
-            "back",
-            base_b,
-            back,
-            anki_back_md,
-            sys_back_hash,
-            anki_back_hash,
-            _conflict_reason(
-                "back", sys_back_hash, anki_back_hash, base_b, back_reason
-            ),
-        )
-        result["conflicts"] += 1
-        result["changed"] = 1
-    else:
-        _close_conflict(conn, kp_id, "back")
+    if front_action in ("push", "pull", "same"):
+        base_front = system_front_hash
+    if back_action in ("push", "pull", "same"):
+        base_back = system_back_hash
+    if reused_note:
+        base_back = None
 
-    if front_action in ("push", "same"):
-        base_f = sys_front_hash
-    if back_action in ("push", "same"):
-        base_b = sys_back_hash
-
+    combined = _UNSET
+    pushed_at = _UNSET
     pending_left = conn.execute(
-        "SELECT COUNT(*) AS value FROM anki_conflict "
+        "SELECT COUNT(*) AS value FROM sync_conflict "
         "WHERE kp_id = ? AND status = 'pending'",
         (kp_id,),
     ).fetchone()["value"]
-    combined = None
-    pushed_at = None
     if mode == "push" and pending_left == 0 and not reused_note:
-        combined = _system_content_hash(front, back, deck)
+        combined = _system_content_hash(front, back, system_deck)
         pushed_at = utc_now()
-    if reused_note:
-        base_b = None
-    _save_baseline(
+    _upsert_sync(
         conn,
         kp_id,
+        target_id,
         note_id,
-        deck if mode == "push" else row["pushed_deck"],
-        base_f,
-        base_b,
-        combined,
-        pushed_at,
+        row["pushed_deck"] if mode != "push" else system_deck,
+        base_front,
+        base_back,
+        combined=combined,
+        pushed_at=pushed_at,
     )
-    return result, errors
+    if mode == "push":
+        conn.execute(
+            "UPDATE anki_sync SET force_push = 0 WHERE kp_id = ? AND target_id = ?",
+            (kp_id, target_id),
+        )
+    return result
 
 
-def _delete_archived_notes(
-    client: AnkiClient, progress: Progress | None = None
-) -> tuple[int, list[str]]:
-    """删除归档卡关联的 Anki 笔记，成功后再清理关联与待处理冲突。"""
-    with closing(connect()) as conn:
-        rows = conn.execute(
-            """
-            SELECT kp.id AS kp_id, kp.anki_note_id, s.anki_note_id AS sync_note_id
-            FROM knowledge_point kp
-            LEFT JOIN anki_sync s ON s.kp_id = kp.id
-            WHERE kp.status = 'archived'
-              AND (kp.anki_note_id IS NOT NULL OR s.anki_note_id IS NOT NULL)
-            ORDER BY kp.id
-            """
-        ).fetchall()
-
-    deleted = 0
-    errors: list[str] = []
-    for index, row in enumerate(rows, start=1):
-        note_id = int(row["anki_note_id"] or row["sync_note_id"])
-        try:
-            client.call("deleteNotes", timeout=15, notes=[note_id])
-        except AnkiError as exc:
-            if "not found" not in str(exc).lower():
-                with closing(connect()) as conn, conn:
-                    conn.execute(
-                        "INSERT INTO anki_sync(kp_id, last_error) VALUES(?, ?) "
-                        "ON CONFLICT(kp_id) DO UPDATE SET last_error = excluded.last_error",
-                        (row["kp_id"], str(exc)),
-                    )
-                errors.append(f"归档卡片 {row['kp_id']}: {exc}")
-                _notify(progress, "清理归档", index, len(rows))
-                continue
-        with closing(connect()) as conn, conn:
-            conn.execute(
-                "UPDATE knowledge_point SET anki_note_id = NULL WHERE id = ?",
-                (row["kp_id"],),
-            )
-            conn.execute("DELETE FROM anki_sync WHERE kp_id = ?", (row["kp_id"],))
-            conn.execute(
-                "DELETE FROM anki_conflict WHERE kp_id = ? AND status = 'pending'",
-                (row["kp_id"],),
-            )
-        deleted += 1
-        _notify(progress, "清理归档", index, len(rows))
-    return deleted, errors
-
-
-def _clear_pending_flags(
-    client: AnkiClient,
-    progress: Progress | None = None,
-) -> tuple[int, list[str]]:
-    """执行待清除的旗帜：只有 Anki 当前颜色与登记时一致才清除。"""
-    with closing(connect()) as conn:
-        rows = conn.execute(
-            """
-            SELECT kp.id AS kp_id,
-                   COALESCE(kp.anki_note_id, s.anki_note_id) AS note_id,
-                   s.flag_clear_pending
-            FROM knowledge_point kp
-            JOIN anki_sync s ON s.kp_id = kp.id
-            WHERE s.flag_clear_pending > 0
-              AND kp.status != 'archived'
-              AND COALESCE(kp.anki_note_id, s.anki_note_id) IS NOT NULL
-            ORDER BY kp.id
-            """
-        ).fetchall()
-    if not rows:
-        return 0, []
-
-    infos = _fetch_notes(
-        client,
-        {int(row["note_id"]) for row in rows},
-        progress,
-        phase="读取旗帜",
-    )
-    note_flags = _fetch_note_flags(
-        client, {int(row["note_id"]) for row in rows}, progress
-    )
-
-    cleared = 0
-    errors: list[str] = []
-    with closing(connect()) as conn:
-        for index, row in enumerate(rows, start=1):
-            kp_id = int(row["kp_id"])
-            pending = int(row["flag_clear_pending"])
-            info = infos.get(int(row["note_id"]))
-            if info is None:
-                conn.execute(
-                    "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
-                    "WHERE kp_id = ?",
-                    (kp_id,),
-                )
-                _notify(progress, "清除旗帜", index, len(rows))
-                continue
-            current, cards = note_flags.get(int(row["note_id"]), (0, []))
-            if current == 0:
-                conn.execute(
-                    "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
-                    "WHERE kp_id = ?",
-                    (kp_id,),
-                )
-                _notify(progress, "清除旗帜", index, len(rows))
-                continue
-            if current != pending:
-                conn.execute(
-                    "UPDATE anki_sync SET anki_flag = ?, flag_clear_pending = 0 "
-                    "WHERE kp_id = ?",
-                    (current, kp_id),
-                )
-                errors.append(f"卡片 {kp_id}: Anki 旗帜已变为 {current}，未清除")
-                _notify(progress, "清除旗帜", index, len(rows))
-                continue
-            try:
-                for card_id in cards:
-                    client.call(
-                        "setSpecificValueOfCard",
-                        card=card_id,
-                        keys=["flags"],
-                        newValues=["0"],
-                    )
-            except AnkiError as exc:
-                errors.append(f"卡片 {kp_id}: 清除旗帜失败：{exc}")
-                _notify(progress, "清除旗帜", index, len(rows))
-                continue
-            conn.execute(
-                "UPDATE anki_sync SET anki_flag = 0, flag_clear_pending = 0 "
-                "WHERE kp_id = ?",
-                (kp_id,),
-            )
-            cleared += 1
-            _notify(progress, "清除旗帜", index, len(rows))
-        conn.commit()
-    return cleared, errors
-
-
-def push(
+def _push_new_note(
+    conn,
     client: AnkiClient,
     model_name: str,
-    sync_enabled: bool,
-    progress: Progress | None = None,
+    target_id: int,
+    row,
+    deck: str,
+    decks: set[str],
 ) -> dict:
-    _notify(progress, "校验 Anki", 0, 1)
-    client.validate(model_name)
-    _notify(progress, "校验 Anki", 1, 1)
+    result = {
+        "changed": 0,
+        "added": 0,
+        "updated": 0,
+        "pulled": 0,
+        "conflicts": 0,
+        "skipped": False,
+        "detached": 0,
+    }
+    kp_id = int(row["id"])
+    front = row["front_md"] or ""
+    back = row["back_md"] or ""
+    _ensure_deck(client, decks, deck)
+    new_id = _add_note(client, model_name, deck, front, back)
+    reused = False
+    if new_id is None:
+        new_id = _find_note_by_front(client, deck, front)
+        if new_id is None:
+            raise AnkiError("addNote 返回空且未找到同名笔记")
+        reused = True
+    combined = None if reused else _system_content_hash(front, back, deck)
+    _upsert_sync(
+        conn,
+        kp_id,
+        target_id,
+        int(new_id),
+        deck,
+        field_hash(front),
+        None if reused else field_hash(back),
+        combined=combined,
+        pushed_at=None if reused else utc_now(),
+    )
+    conn.execute(
+        "UPDATE anki_sync SET force_push = 0 WHERE kp_id = ? AND target_id = ?",
+        (kp_id, target_id),
+    )
+    result["changed"] = 1
+    if reused:
+        result["updated"] = 1
+    else:
+        result["added"] = 1
+    return result
 
-    archived_deleted, archive_errors = _delete_archived_notes(client, progress)
 
+def _handle_missing_note(
+    conn,
+    row,
+    target_id: int,
+    clients: dict[int, AnkiClient],
+    errors: list[str],
+) -> dict:
+    result = {
+        "changed": 0,
+        "added": 0,
+        "updated": 0,
+        "pulled": 0,
+        "conflicts": 0,
+        "skipped": True,
+        "detached": 0,
+    }
+    kp_id = int(row["id"])
+    if row["detached"]:
+        return result
+
+    front = row["front_md"] or ""
+    back = row["back_md"] or ""
+    deck = _deck_name(row["module_path"])
+    base_front = row["pushed_front_hash"]
+    base_back = row["pushed_back_hash"]
+    edited = (
+        (base_front is not None and field_hash(front) != base_front)
+        or (base_back is not None and field_hash(back) != base_back)
+    )
+
+    if edited:
+        _record_conflict(
+            conn,
+            target_id,
+            kp_id,
+            row["anki_note_id"],
+            "delete_edit",
+            "目标删除了这张卡，但系统侧有未同步的修改",
+            front,
+            back,
+            deck,
+            None,
+            None,
+            None,
+            base_front,
+            base_back,
+        )
+        result["conflicts"] = 1
+        result["changed"] = 1
+        result["skipped"] = False
+        return result
+
+    _propagate_delete(conn, kp_id, target_id, clients, errors)
+    result["changed"] = 1
+    result["skipped"] = False
+    return result
+
+
+def _import_note(
+    conn,
+    client: AnkiClient,
+    target_id: int,
+    info: dict,
+    deck: str,
+    group,
+) -> dict:
+    """目标侧新增 note：按组正面精确去重后建卡或绑定。"""
+    result = {"created": 0, "bound": 0, "conflicts": 0, "skipped": 0}
+    front = _target_field_markdown(info, "Front")
+    back = _target_field_markdown(info, "Back")
+    norm = normalize_front(front)
+    if not norm:
+        result["skipped"] = 1
+        return result
+    note_id = int(info["noteId"])
+    deck = deck or group["path"].replace("/", "::")
+    module_id = _module_for_deck(conn, target_id, int(group["id"]), deck)
+    existing = conn.execute(
+        "SELECT id, front_md, back_md, status FROM knowledge_point "
+        "WHERE front_norm = ? AND group_id = ?",
+        (norm, int(group["id"])),
+    ).fetchone()
+
+    if existing is None:
+        now = utc_now()
+        cursor = conn.execute(
+            "INSERT INTO knowledge_point"
+            "(front_md, back_md, front_norm, module_id, group_id, status, origin, "
+            " created_at, updated_at) "
+            "VALUES(?, ?, ?, ?, ?, 'ready', 'anki', ?, ?)",
+            (front, back, norm, module_id, int(group["id"]), now, now),
+        )
+        kp_id = int(cursor.lastrowid)
+        _upsert_sync(
+            conn,
+            kp_id,
+            target_id,
+            note_id,
+            deck,
+            field_hash(front),
+            field_hash(back),
+            combined=_system_content_hash(front, back, deck),
+            pushed_at=now,
+        )
+        result["created"] = 1
+        return result
+
+    kp_id = int(existing["id"])
+    if existing["status"] == "archived":
+        result["skipped"] = 1
+        return result
+    binding = conn.execute(
+        "SELECT anki_note_id FROM anki_sync WHERE kp_id = ? AND target_id = ?",
+        (kp_id, target_id),
+    ).fetchone()
+    if binding is not None and binding["anki_note_id"] is not None:
+        if int(binding["anki_note_id"]) == note_id:
+            _set_last_seen(conn, kp_id, target_id)
+            result["skipped"] = 1
+            return result
+        _record_conflict(
+            conn,
+            target_id,
+            kp_id,
+            note_id,
+            "duplicate",
+            f"同组已有相同正面并绑定了其他目标笔记 #{binding['anki_note_id']}",
+            existing["front_md"],
+            existing["back_md"],
+            _system_deck(conn, kp_id),
+            front,
+            back,
+            deck,
+            None,
+            None,
+        )
+        result["conflicts"] = 1
+        return result
+
+    if field_hash(existing["back_md"] or "") == field_hash(back):
+        status = "ready" if existing["status"] == "draft" else existing["status"]
+        conn.execute(
+            "UPDATE knowledge_point SET status = ?, module_id = COALESCE(?, module_id), "
+            "updated_at = ? WHERE id = ?",
+            (status, module_id, utc_now(), kp_id),
+        )
+        system_deck = _system_deck(conn, kp_id)
+        _upsert_sync(
+            conn,
+            kp_id,
+            target_id,
+            note_id,
+            deck,
+            field_hash(front),
+            field_hash(back),
+            combined=_system_content_hash(front, back, system_deck),
+            pushed_at=utc_now(),
+        )
+        result["bound"] = 1
+        return result
+
+    _record_conflict(
+        conn,
+        target_id,
+        kp_id,
+        note_id,
+        "duplicate",
+        "同组正面相同但背面不同",
+        existing["front_md"],
+        existing["back_md"],
+        _system_deck(conn, kp_id),
+        front,
+        back,
+        deck,
+        None,
+        None,
+    )
+    result["conflicts"] = 1
+    return result
+
+
+def _discover_notes(
+    client: AnkiClient, scopes: list[str], progress: Progress | None
+) -> dict[int, str]:
+    if not scopes:
+        return {}
+    decks = client.call("deckNames") or []
+    matched = [deck for deck in decks if targets.deck_in_scope(deck, scopes)]
+    found: dict[int, str] = {}
+    for index, deck in enumerate(matched, start=1):
+        try:
+            notes = client.call(
+                "findNotes", query=f'deck:"{_search_escape(deck)}"'
+            ) or []
+            for note_id in notes:
+                found[int(note_id)] = deck
+        except AnkiError:
+            continue
+        _notify(progress, "扫描目标牌组", index, len(matched))
+    return found
+
+
+def _match_deck_group(conn, target_id: int, note_decks: dict[int, str], note_id: int):
+    deck = note_decks.get(note_id)
+    if deck is None:
+        return None
+    return targets.group_for_deck(conn, target_id, deck)
+
+
+def _unique_deck(note_decks: dict[int, str], note_id: int, fallback: str | None) -> str:
+    deck = note_decks.get(note_id)
+    if deck:
+        return deck
+    return fallback or "Default"
+
+
+def sync_target(
+    target_id: int,
+    model_name: str,
+    sync_enabled: bool,
+    guard: bool,
+    progress: Progress | None = None,
+    push: bool = True,
+    pull: bool = True,
+) -> dict:
     with closing(connect()) as conn:
-        rows = _load_sync_rows(conn, only_ready=True)
-        conflicted = {
-            item["kp_id"]
-            for item in conn.execute(
-                "SELECT DISTINCT kp_id FROM anki_conflict WHERE status = 'pending'"
+        target = targets.get_target(conn, target_id)
+        if target is None:
+            raise LookupError("同步目标不存在")
+        scopes = targets.scope_paths(conn, target_id)
+
+    client = targets.client_for(target, guard)
+    _notify(progress, "校验目标", 0, 1)
+    client.ensure_model(model_name)
+    _notify(progress, "校验目标", 1, 1)
+
+    clients = _clients_for_targets(guard, exclude=target_id)
+    result = {
+        "target_id": target_id,
+        "target": target["name"],
+        "url": target["base_url"],
+        "ready": 0,
+        "archived_deleted": 0,
+        "changed": 0,
+        "added": 0,
+        "updated": 0,
+        "pulled": 0,
+        "conflicts": 0,
+        "detached": 0,
+        "imported": 0,
+        "skipped_conflicts": 0,
+        "flags_cleared": 0,
+        "failed": 0,
+        "media_uploaded": 0,
+        "backup": None,
+        "sync": "skipped",
+        "errors": [],
+    }
+    errors: list[str] = result["errors"]
+
+    with closing(connect()) as conn, conn:
+        archived_deleted, archive_errors = _delete_archived_notes(
+            conn, client, target_id, progress
+        )
+        result["archived_deleted"] = archived_deleted
+        errors.extend(archive_errors)
+
+        rows = _load_rows(conn, target_id, ("ready",))
+        result["ready"] = len(rows)
+        conflicted = _pending_conflict_cards(conn)
+
+        linked_ids = {
+            int(row["anki_note_id"])
+            for row in rows
+            if row["anki_note_id"] is not None
+        }
+        infos = _fetch_notes(client, linked_ids, progress)
+        note_decks = _note_decks(client, infos)
+
+        if pull:
+            discovered = _discover_notes(client, scopes, progress)
+            new_ids = set(discovered) - linked_ids
+            if new_ids:
+                new_infos = _fetch_notes(
+                    client, new_ids, progress, phase="读取新增笔记"
+                )
+                new_decks = _note_decks(client, new_infos)
+                for note_id in sorted(new_infos):
+                    info = new_infos[note_id]
+                    if info.get("modelName") != model_name:
+                        continue
+                    deck = _unique_deck(
+                        new_decks, note_id, discovered.get(note_id)
+                    )
+                    group = targets.group_for_deck(conn, target_id, deck)
+                    if group is None:
+                        continue
+                    try:
+                        imported = _import_note(
+                            conn, client, target_id, info, deck, group
+                        )
+                        result["imported"] += imported["created"] + imported["bound"]
+                        result["conflicts"] += imported["conflicts"]
+                        result["changed"] += imported["created"] + imported["bound"]
+                        conn.commit()
+                    except AnkiError as exc:
+                        result["failed"] += 1
+                        errors.append(f"目标新增 note {note_id}: {exc}")
+                        conn.rollback()
+                # 导入可能给已有卡绑定 note，刷新行避免随后重复推送新 note
+                infos.update(new_infos)
+                note_decks.update(new_decks)
+                rows = _load_rows(conn, target_id, ("ready",))
+                linked_ids = {
+                    int(row["anki_note_id"])
+                    for row in rows
+                    if row["anki_note_id"] is not None
+                }
+                conflicted = _pending_conflict_cards(conn)
+
+        media_refs: set[str] = set()
+        if push:
+            for row in rows:
+                if int(row["id"]) in conflicted:
+                    continue
+                media_refs |= {
+                    normalize_media_ref(name)
+                    for name in _markdown_media(row["front_md"], row["back_md"])
+                    if _is_local_media(name)
+                }
+        media_conflicts: set[str] = set()
+        if push and media_refs:
+            uploaded, media_conflicts, media_errors = _push_media(
+                client, media_refs
+            )
+            result["media_uploaded"] = uploaded
+            errors.extend(media_errors)
+
+        flags = {}
+        if pull and infos:
+            try:
+                flags = _fetch_note_flags(client, set(infos), progress)
+            except AnkiError as exc:
+                errors.append(str(exc))
+
+        decks: set[str] = set()
+        if push:
+            decks = set(client.call("deckNames") or [])
+
+        group_paths = {
+            int(row["id"]): row["path"]
+            for row in conn.execute(
+                "SELECT m.id, m.path FROM group_target gt "
+                "JOIN module m ON m.id = gt.group_id WHERE gt.target_id = ?",
+                (target_id,),
             )
         }
 
-    linked_ids = {
-        int(row["anki_note_id"] or row["sync_note_id"])
-        for row in rows
-        if (row["anki_note_id"] or row["sync_note_id"])
-    }
-    infos = _fetch_notes(client, linked_ids, progress)
-
-    media_refs: set[str] = set()
-    for row in rows:
-        if row["id"] in conflicted:
-            continue
-        media_refs |= _markdown_media(row["front_md"], row["back_md"])
-    media_refs = {name for name in media_refs if _is_local_media(name)}
-
-    decks: set[str] = set(client.call("deckNames"))
-    remote_media: set[str] = set()
-    if media_refs:
-        try:
-            remote_media = set(client.call("getMediaFilesNames", pattern="*"))
-        except AnkiError:
-            remote_media = set()
-
-    media_uploaded = 0
-    errors: list[str] = list(archive_errors)
-    for name in sorted(media_refs):
-        if name in remote_media:
-            continue
-        path = config.MEDIA_DIR / name
-        if not path.is_file():
-            errors.append(f"媒体缺失: {name}")
-            continue
-        try:
-            data = base64.b64encode(path.read_bytes()).decode("ascii")
-            client.call("storeMediaFile", filename=name, data=data)
-            media_uploaded += 1
-        except AnkiError as exc:
-            errors.append(f"媒体 {name}: {exc}")
-
-    added = updated = pulled = conflicts = skipped = failed = 0
-    changed = archived_deleted
-    with closing(connect()) as conn:
         for index, row in enumerate(rows, start=1):
+            kp_id = int(row["id"])
+            note_id = row["anki_note_id"]
+            info = infos.get(int(note_id)) if note_id is not None else None
+            if kp_id in conflicted:
+                result["skipped_conflicts"] += 1
+                _notify(progress, "同步卡片", index, len(rows))
+                continue
+
+            deck = (
+                _unique_deck(note_decks, int(note_id), row["pushed_deck"])
+                if note_id
+                else _deck_name(row["module_path"])
+            )
+            group_path = group_paths.get(int(row["group_id"])) if row["group_id"] else None
+            in_group_scope = bool(group_path) and targets.deck_in_scope(
+                deck, [group_path]
+            )
             try:
-                result, card_errors = _sync_card(
-                    conn,
-                    client,
-                    model_name,
-                    row,
-                    infos.get(int(row["anki_note_id"] or row["sync_note_id"] or 0)),
-                    "push",
-                    decks,
-                )
+                if note_id is not None and info is None:
+                    if push and row["force_push"]:
+                        card = _push_new_note(
+                            conn,
+                            client,
+                            model_name,
+                            target_id,
+                            row,
+                            _deck_name(row["module_path"]),
+                            decks,
+                        )
+                    else:
+                        card = _handle_missing_note(
+                            conn, row, target_id, clients, errors
+                        )
+                elif info is not None:
+                    if not in_group_scope:
+                        if not row["detached"]:
+                            _detach(conn, kp_id, target_id)
+                            result["detached"] += 1
+                            result["changed"] += 1
+                        card = {"changed": 0, "conflicts": 0}
+                    else:
+                        card = _merge_existing(
+                            conn,
+                            client,
+                            model_name,
+                            target_id,
+                            row,
+                            info,
+                            deck,
+                            decks,
+                            "push" if push else "pull",
+                            media_conflicts,
+                        )
+                        if row["detached"]:
+                            conn.execute(
+                                "UPDATE anki_sync SET detached = 0 "
+                                "WHERE kp_id = ? AND target_id = ?",
+                                (kp_id, target_id),
+                            )
+                        if pull and note_id is not None:
+                            _record_flag(
+                                conn,
+                                kp_id,
+                                target_id,
+                                flags.get(int(note_id), (0, []))[0],
+                            )
+                else:
+                    card = (
+                        _push_new_note(
+                            conn, client, model_name, target_id, row, _deck_name(row["module_path"]), decks
+                        )
+                        if push
+                        else {"changed": 0, "conflicts": 0, "skipped": True}
+                    )
                 conn.commit()
-                added += result["added"]
-                updated += result["updated"]
-                pulled += result["pulled"]
-                conflicts += result["conflicts"]
-                changed += result["changed"]
-                if result["skipped"]:
-                    skipped += 1
-                errors.extend(card_errors)
+                result["added"] += card.get("added", 0)
+                result["updated"] += card.get("updated", 0)
+                result["pulled"] += card.get("pulled", 0)
+                result["conflicts"] += card.get("conflicts", 0)
+                result["changed"] += card.get("changed", 0)
             except AnkiError as exc:
-                failed += 1
-                errors.append(f"卡片 {row['id']}: {exc}")
+                result["failed"] += 1
+                errors.append(f"卡片 {kp_id}: {exc}")
                 conn.rollback()
-                conn.execute(
-                    "INSERT INTO anki_sync(kp_id, last_error) VALUES(?, ?) "
-                    "ON CONFLICT(kp_id) DO UPDATE SET last_error = excluded.last_error",
-                    (row["id"], str(exc)),
-                )
+                _default_error(conn, kp_id, target_id, str(exc))
                 conn.commit()
-            _notify(progress, "检查卡片", index, len(rows))
+            _notify(progress, "同步卡片", index, len(rows))
 
-    flags_cleared, flag_errors = _clear_pending_flags(client, progress)
-    changed += flags_cleared
-    errors.extend(flag_errors)
+        if push:
+            flags_cleared, flag_errors = _clear_pending_flags(
+                conn, client, target_id, progress
+            )
+            result["flags_cleared"] = flags_cleared
+            errors.extend(flag_errors)
+            result["changed"] += flags_cleared
 
-    backup = None
-    sync_status = "skipped" if not changed else "disabled"
-    if sync_enabled and changed:
-        _notify(progress, "备份集合", 0, 1)
-        backup = backup_anki()
-        _notify(progress, "备份集合", 1, 1)
+        if sync_enabled and result["changed"]:
+            _notify(progress, "备份集合", 0, 1)
+            if target["base_url"].rstrip("/") == config.ANKI_CONNECT_URL.rstrip("/"):
+                result["backup"] = backup_anki()
+            _notify(progress, "备份集合", 1, 1)
+            result["sync"] = "ok"
+            try:
+                if result["media_uploaded"]:
+                    client.call("syncMedia", timeout=600)
+                client.sync_web()
+            except AnkiError as exc:
+                result["sync"] = f"failed: {exc}"
+                errors.append(f"同步失败: {exc}")
 
-        sync_status = "ok"
-        try:
-            if media_uploaded:
-                client.call("syncMedia", timeout=600)
-            client.call("sync", timeout=600)
-        except AnkiError as exc:
-            sync_status = f"failed: {exc}"
-            errors.append(f"同步失败: {exc}")
+        targets.record_target_sync(conn, target_id, None)
+        conn.commit()
 
-    return {
-        "ready": len(rows),
-        "archived_deleted": archived_deleted,
-        "changed": changed,
-        "added": added,
-        "updated": updated,
-        "pulled": pulled,
-        "conflicts": conflicts,
-        "skipped_conflicts": skipped,
-        "flags_cleared": flags_cleared,
-        "failed": failed,
-        "media_uploaded": media_uploaded,
-        "backup": backup,
-        "sync": sync_status,
-        "errors": errors,
+    return result
+
+
+def _aggregate(results: list[dict], action: str) -> dict:
+    if len(results) == 1:
+        return results[0]
+    total = {
+        "action": action,
+        "changed": 0,
+        "added": 0,
+        "updated": 0,
+        "pulled": 0,
+        "conflicts": 0,
+        "detached": 0,
+        "failed": 0,
+        "archived_deleted": 0,
+        "flags_cleared": 0,
+        "media_uploaded": 0,
+        "errors": [],
+        "targets": results,
     }
+    for item in results:
+        for key in (
+            "changed",
+            "added",
+            "updated",
+            "pulled",
+            "conflicts",
+            "detached",
+            "failed",
+            "archived_deleted",
+            "flags_cleared",
+            "media_uploaded",
+        ):
+            total[key] += item.get(key, 0)
+        name = item.get("target") or item.get("target_id")
+        total["errors"].extend(f"[{name}] {error}" for error in item.get("errors", []))
+    return total
 
 
-def pull(
-    client: AnkiClient,
+def _selected_targets(target_ids: list[int] | None) -> list[int]:
+    with closing(connect()) as conn:
+        rows = targets.list_targets(conn, enabled_only=True)
+    ids = [int(row["id"]) for row in rows]
+    if target_ids:
+        wanted = {int(item) for item in target_ids}
+        ids = [target_id for target_id in ids if target_id in wanted]
+    return ids
+
+
+def push_targets(
     model_name: str,
+    sync_enabled: bool,
+    guard: bool,
+    progress: Progress | None = None,
+    target_ids: list[int] | None = None,
+) -> dict:
+    results = []
+    for target_id in _selected_targets(target_ids):
+        try:
+            results.append(
+                sync_target(
+                    target_id,
+                    model_name,
+                    sync_enabled,
+                    guard,
+                    progress,
+                    push=True,
+                    pull=True,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - 单目标失败不阻塞其他目标
+            with closing(connect()) as conn, conn:
+                targets.record_target_sync(conn, target_id, str(exc))
+            results.append(
+                {
+                    "target_id": target_id,
+                    "target": str(target_id),
+                    "changed": 0,
+                    "added": 0,
+                    "updated": 0,
+                    "pulled": 0,
+                    "conflicts": 0,
+                    "failed": 1,
+                    "errors": [str(exc)],
+                }
+            )
+    return _aggregate(results, "push")
+
+
+def pull_target(
+    target_id: int,
+    model_name: str,
+    sync_enabled: bool,
+    guard: bool,
     progress: Progress | None = None,
 ) -> dict:
-    """手动从 Anki 拉取：只回写 Anki 侧修改并记录冲突，不推送系统内容。"""
-    _notify(progress, "校验 Anki", 0, 1)
-    client.validate(model_name)
-    _notify(progress, "校验 Anki", 1, 1)
+    return sync_target(
+        target_id, model_name, sync_enabled, guard, progress, push=False, pull=True
+    )
+
+
+def sync_all_targets(
+    model_name: str,
+    sync_enabled: bool,
+    guard: bool,
+    progress: Progress | None = None,
+    target_ids: list[int] | None = None,
+) -> dict:
+    results = []
+    for target_id in _selected_targets(target_ids):
+        try:
+            result = sync_target(
+                target_id, model_name, sync_enabled, guard, progress
+            )
+            result["action"] = "sync"
+            results.append(result)
+        except Exception as exc:  # noqa: BLE001
+            with closing(connect()) as conn, conn:
+                targets.record_target_sync(conn, target_id, str(exc))
+            results.append(
+                {
+                    "target_id": target_id,
+                    "target": str(target_id),
+                    "changed": 0,
+                    "added": 0,
+                    "updated": 0,
+                    "pulled": 0,
+                    "conflicts": 0,
+                    "failed": 1,
+                    "errors": [str(exc)],
+                }
+            )
+    return _aggregate(results, "sync")
+
+
+def takeover_target(
+    target_id: int, model_name: str, guard: bool, progress: Progress | None = None
+) -> dict:
+    with closing(connect()) as conn:
+        target = targets.get_target(conn, target_id)
+        if target is None:
+            raise LookupError("同步目标不存在")
+        scopes = targets.scope_paths(conn, target_id)
+    client = targets.client_for(target, guard)
+    _notify(progress, "校验目标", 0, 1)
+    client.ensure_model(model_name)
+    _notify(progress, "校验目标", 1, 1)
+
+    if not scopes:
+        return {
+            "target_id": target_id,
+            "target": target["name"],
+            "scanned_decks": 0,
+            "scanned_notes": 0,
+            "matched": 0,
+            "unmatched_local": 0,
+            "unmatched_anki": 0,
+            "errors": [],
+        }
 
     with closing(connect()) as conn:
-        rows = _load_sync_rows(
-            conn, only_ready=False, linked_only=True, exclude_archived=True
-        )
-    note_ids = {int(row["anki_note_id"] or row["sync_note_id"]) for row in rows}
-    infos = _fetch_notes(client, note_ids, progress)
-    note_flags = _fetch_note_flags(client, note_ids, progress)
+        rows = conn.execute(
+            """
+            SELECT kp.id, kp.front_norm, kp.group_id
+            FROM knowledge_point kp
+            JOIN group_target gt ON gt.group_id = kp.group_id AND gt.target_id = ?
+            LEFT JOIN anki_sync s ON s.kp_id = kp.id AND s.target_id = ?
+            WHERE kp.status != 'archived'
+              AND (s.anki_note_id IS NULL)
+            """,
+            (target_id, target_id),
+        ).fetchall()
+        pending = {(row["group_id"], row["front_norm"]): row["id"] for row in rows}
+        by_norm: dict[str, list[tuple[int | None, int]]] = {}
+        for row in rows:
+            by_norm.setdefault(row["front_norm"], []).append(
+                (row["group_id"], row["id"])
+            )
 
-    pulled = conflicts = skipped = 0
-    errors: list[str] = []
-    with closing(connect()) as conn:
-        for index, row in enumerate(rows, start=1):
-            note_id = int(row["anki_note_id"] or row["sync_note_id"])
-            try:
-                result, card_errors = _sync_card(
-                    conn, client, model_name, row, infos.get(note_id), "pull", set()
-                )
-                _record_anki_flag(
-                    conn,
-                    row["id"],
-                    note_flags.get(int(note_id), (0, []))[0],
-                )
-                conn.commit()
-                pulled += result["pulled"]
-                conflicts += result["conflicts"]
-                if result["skipped"]:
-                    skipped += 1
-                errors.extend(card_errors)
-            except AnkiError as exc:
-                conn.rollback()
-                errors.append(f"卡片 {row['id']}: {exc}")
-            _notify(progress, "拉取笔记", index, len(rows))
+    discovered = _discover_notes(client, scopes, progress)
+    notes = _fetch_notes(client, set(discovered), progress, phase="匹配笔记")
+    decks = _note_decks(client, notes)
+    matches: list[tuple[int, int, str, str, str]] = []
+    other_notes = 0
+    for note_id, info in notes.items():
+        if info.get("modelName") != model_name:
+            other_notes += 1
+            continue
+        deck = _unique_deck(decks, note_id, discovered.get(note_id))
+        with closing(connect()) as conn:
+            group = targets.group_for_deck(conn, target_id, deck)
+        if group is None:
+            continue
+        norm = normalize_front(_target_field_markdown(info, "Front"))
+        kp_id = pending.pop((int(group["id"]), norm), None)
+        if kp_id is None:
+            candidates = [
+                item
+                for item in by_norm.get(norm, [])
+                if pending.get((item[0], norm)) == item[1]
+            ]
+            if len(candidates) == 1:
+                _, kp_id = candidates[0]
+                pending.pop((candidates[0][0], norm), None)
+        if kp_id is None:
+            continue
+        front = _target_field_markdown(info, "Front")
+        back = _target_field_markdown(info, "Back")
+        matches.append((kp_id, note_id, deck, field_hash(front), field_hash(back)))
+
+    with closing(connect()) as conn, conn:
+        for kp_id, note_id, deck, front_hash, back_hash in matches:
+            _upsert_sync(conn, kp_id, target_id, note_id, deck, front_hash, back_hash)
+        conn.commit()
 
     return {
-        "linked": len(rows),
-        "checked": len(rows) - skipped,
-        "skipped": skipped,
-        "pulled": pulled,
-        "conflicts": conflicts,
+        "target_id": target_id,
+        "target": target["name"],
+        "scanned_decks": len(scopes),
+        "scanned_notes": len(notes),
+        "matched": len(matches),
+        "unmatched_local": len(pending),
+        "unmatched_anki": max(0, len(notes) - len(matches) - other_notes),
+        "errors": [],
+    }
+
+
+def audit_target(
+    target_id: int, model_name: str, guard: bool, progress: Progress | None = None
+) -> dict:
+    with closing(connect()) as conn:
+        target = targets.get_target(conn, target_id)
+        if target is None:
+            raise LookupError("同步目标不存在")
+        scopes = targets.scope_paths(conn, target_id)
+        decks = set(scopes)
+        decks.update(
+            row["pushed_deck"]
+            for row in conn.execute(
+                "SELECT DISTINCT pushed_deck FROM anki_sync "
+                "WHERE target_id = ? AND pushed_deck IS NOT NULL AND pushed_deck != ''",
+                (target_id,),
+            )
+        )
+        db_notes = {
+            int(row["anki_note_id"]): dict(row)
+            for row in conn.execute(
+                """
+                SELECT s.kp_id AS id, s.anki_note_id, kp.front_md, kp.status,
+                       m.path AS module_path
+                FROM anki_sync s
+                JOIN knowledge_point kp ON kp.id = s.kp_id
+                LEFT JOIN module m ON m.id = kp.module_id
+                WHERE s.target_id = ? AND s.anki_note_id IS NOT NULL
+                """,
+                (target_id,),
+            )
+        }
+    client = targets.client_for(target, guard)
+    client.ensure_model(model_name)
+
+    errors: list[str] = []
+    note_decks: dict[int, str] = {}
+    ordered_decks = sorted(decks)
+    for index, deck in enumerate(ordered_decks, start=1):
+        try:
+            found = client.call(
+                "findNotes", query=f'deck:"{_search_escape(deck)}"'
+            )
+            for note_id in found or []:
+                note_decks[int(note_id)] = deck
+        except AnkiError as exc:
+            errors.append(f"{deck}: {exc}")
+        _notify(progress, "扫描牌组", index, len(ordered_decks))
+
+    infos = _fetch_notes(client, set(note_decks), progress, phase="读取笔记")
+    orphans = []
+    for note_id in sorted(infos, reverse=True):
+        info = infos[note_id]
+        if note_id in db_notes or info.get("modelName") != model_name:
+            continue
+        fronts = info.get("fields") or {}
+        orphans.append(
+            {
+                "note_id": note_id,
+                "deck": note_decks.get(note_id, ""),
+                "model": info["modelName"],
+                "front": _plain_text(
+                    anki_to_markdown((fronts.get("Front") or {}).get("value", ""))
+                )[:120],
+                "back": _plain_text(
+                    anki_to_markdown((fronts.get("Back") or {}).get("value", ""))
+                )[:120],
+            }
+        )
+
+    missing = []
+    for note_id, row in db_notes.items():
+        if note_id in infos:
+            continue
+        missing.append(
+            {
+                "kp_id": row["id"],
+                "note_id": note_id,
+                "front": _plain_text(row["front_md"] or "")[:120],
+                "module_path": row["module_path"] or "",
+                "status": row["status"],
+            }
+        )
+
+    return {
+        "target_id": target_id,
+        "target": target["name"],
+        "decks": ordered_decks,
+        "model": model_name,
+        "scanned_notes": len(infos),
+        "system_notes": len(db_notes),
+        "orphan_total": len(orphans),
+        "merged_total": 0,
+        "missing_total": len(missing),
+        "orphans": orphans[:AUDIT_LIMIT],
+        "missing": missing[:AUDIT_LIMIT],
         "errors": errors,
     }
 
@@ -1402,13 +1799,12 @@ def pull(
 def _conflict_detail(conn, conflict_id: int) -> dict:
     row = conn.execute(
         """
-        SELECT c.id, c.kp_id, c.anki_note_id, c.field, c.base_hash,
-               c.system_value, c.anki_value, c.system_hash, c.anki_hash,
-               c.status, c.resolution, c.note, c.created_at, c.resolved_at,
+        SELECT c.*, t.name AS target_name,
                kp.front_md, kp.back_md, kp.status AS card_status,
                m.path AS module_path
-        FROM anki_conflict c
+        FROM sync_conflict c
         JOIN knowledge_point kp ON kp.id = c.kp_id
+        LEFT JOIN anki_target t ON t.id = c.target_id
         LEFT JOIN module m ON m.id = kp.module_id
         WHERE c.id = ?
         """,
@@ -1417,8 +1813,14 @@ def _conflict_detail(conn, conflict_id: int) -> dict:
     if row is None:
         raise LookupError("冲突不存在")
     item = dict(row)
-    item["field_label"] = FIELD_LABELS.get(item["field"], item["field"])
     item["front_preview"] = _plain_text(item["front_md"] or "")[:160]
+    return item
+
+
+def _conflict_list_item(row) -> dict:
+    item = dict(row)
+    item["front_preview"] = _plain_text(item.get("front_md") or "")[:160]
+    item.pop("front_md", None)
     return item
 
 
@@ -1428,254 +1830,155 @@ def list_conflicts(status: str = "pending", limit: int = 100) -> dict:
     limit = max(1, min(limit, 500))
     with closing(connect()) as conn:
         total = conn.execute(
-            "SELECT COUNT(*) AS value FROM anki_conflict WHERE status = ?",
+            "SELECT COUNT(*) AS value FROM sync_conflict WHERE status = ?",
             (status,),
         ).fetchone()["value"]
         rows = conn.execute(
             """
-            SELECT c.id, c.kp_id, c.anki_note_id, c.field, c.base_hash,
-                   c.system_value, c.anki_value, c.system_hash, c.anki_hash,
-                   c.status, c.resolution, c.note, c.created_at, c.resolved_at,
-                   kp.front_md, kp.status AS card_status, m.path AS module_path
-            FROM anki_conflict c
+            SELECT c.id, c.kp_id, c.target_id, c.anki_note_id, c.kind,
+                   c.system_front, c.system_back, c.system_deck,
+                   c.target_front, c.target_back, c.target_deck,
+                   c.note, c.status, c.resolution, c.created_at, c.resolved_at,
+                   kp.front_md, kp.status AS card_status, m.path AS module_path,
+                   t.name AS target_name
+            FROM sync_conflict c
             JOIN knowledge_point kp ON kp.id = c.kp_id
+            LEFT JOIN anki_target t ON t.id = c.target_id
             LEFT JOIN module m ON m.id = kp.module_id
             WHERE c.status = ?
             ORDER BY c.id DESC LIMIT ?
             """,
             (status, limit),
         ).fetchall()
-
-    items = []
-    for row in rows:
-        item = dict(row)
-        item["field_label"] = FIELD_LABELS.get(item["field"], item["field"])
-        item["front_preview"] = _plain_text(item["front_md"] or "")[:160]
-        item.pop("front_md", None)
-        items.append(item)
-    return {"total": total, "status": status, "items": items}
+    return {
+        "total": total,
+        "status": status,
+        "items": [_conflict_list_item(row) for row in rows],
+    }
 
 
-def _card_content_hash(conn, kp_id: int) -> str | None:
-    row = conn.execute(
-        """
-        SELECT kp.front_md, kp.back_md, m.path AS module_path
-        FROM knowledge_point kp
-        LEFT JOIN module m ON m.id = kp.module_id
-        WHERE kp.id = ?
-        """,
-        (kp_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    deck = _deck_name(row["module_path"])
-    return _system_content_hash(row["front_md"], row["back_md"], deck)
-
-
-def _pending_count(conn, kp_id: int) -> int:
-    return conn.execute(
-        "SELECT COUNT(*) AS value FROM anki_conflict "
-        "WHERE kp_id = ? AND status = 'pending'",
-        (kp_id,),
-    ).fetchone()["value"]
-
-
-def _refresh_combined(conn, kp_id: int) -> None:
-    if _pending_count(conn, kp_id):
-        return
-    combined = _card_content_hash(conn, kp_id)
+def _force_push_all(conn, kp_id: int) -> None:
     conn.execute(
-        "UPDATE anki_sync SET pushed_hash = ?, pushed_at = ? WHERE kp_id = ?",
-        (combined, utc_now(), kp_id),
+        "UPDATE anki_sync SET force_push = 1, detached = 0 WHERE kp_id = ?",
+        (kp_id,),
     )
 
 
-def resolve_conflict(
-    client: AnkiClient, conflict_id: int, choice: str
-) -> dict:
-    """用系统内容覆盖 Anki，或采用 Anki 背面回写系统。"""
-    if choice not in ("system", "anki"):
+def resolve_conflict(conflict_id: int, choice: str) -> dict:
+    """整卡选择：保留系统内容，或采用目标内容并分发到所有目标。"""
+    if choice not in ("system", "target"):
         raise ValueError("不支持的解决方式")
-
     with closing(connect()) as conn, conn:
         conflict = conn.execute(
-            "SELECT * FROM anki_conflict WHERE id = ?", (conflict_id,)
+            "SELECT * FROM sync_conflict WHERE id = ?", (conflict_id,)
         ).fetchone()
         if conflict is None:
             raise LookupError("冲突不存在")
         if conflict["status"] != "pending":
             raise RuntimeError("该冲突已处理")
-        if choice == "anki" and conflict["field"] != "back":
-            raise ValueError("正面冲突只能使用系统内容")
 
         card = conn.execute(
-            """
-            SELECT kp.front_md, kp.back_md, kp.anki_note_id, m.path AS module_path
-            FROM knowledge_point kp
-            LEFT JOIN module m ON m.id = kp.module_id
-            WHERE kp.id = ?
-            """,
+            "SELECT id, front_md, back_md, front_norm, group_id, status "
+            "FROM knowledge_point WHERE id = ?",
             (conflict["kp_id"],),
         ).fetchone()
         if card is None:
             raise LookupError("卡片不存在")
 
-        note_id = conflict["anki_note_id"] or card["anki_note_id"]
-        if note_id is None:
-            raise RuntimeError("卡片未关联 Anki 笔记")
-
-        if choice == "system":
-            value = (
-                card["front_md"] if conflict["field"] == "front" else card["back_md"]
+        if choice == "target":
+            front = conflict["target_front"] or ""
+            back = conflict["target_back"] or ""
+            if not front:
+                raise ValueError("目标版本没有可用的正面，无法采用")
+            norm = normalize_front(front)
+            collision = _front_collision(
+                conn, card["id"], card["group_id"], norm
             )
-            client.call(
-                "updateNoteFields",
-                note={
-                    "id": note_id,
-                    "fields": {FIELD_NAMES[conflict["field"]]: value},
-                },
-            )
-            column = (
-                "pushed_front_hash"
-                if conflict["field"] == "front"
-                else "pushed_back_hash"
-            )
+            if collision is not None:
+                raise ValueError(f"目标正面与卡片 #{collision['id']} 重复")
+            module_id = card["group_id"]
+            deck = conflict["target_deck"]
+            if deck:
+                module_id = _module_for_deck(
+                    conn, conflict["target_id"] or 0, card["group_id"], deck
+                ) or module_id
+            status = "ready" if card["status"] == "draft" else card["status"]
             conn.execute(
-                f"UPDATE anki_sync SET {column} = ? WHERE kp_id = ?",
-                (field_hash(value), conflict["kp_id"]),
+                "UPDATE knowledge_point SET front_md = ?, back_md = ?, "
+                "front_norm = ?, status = ?, module_id = COALESCE(?, module_id), "
+                "updated_at = ? WHERE id = ?",
+                (front, back, norm, status, module_id, utc_now(), card["id"]),
             )
-            conn.execute(
-                "UPDATE anki_conflict SET status = 'resolved', resolution = 'system', "
-                "resolved_at = ? WHERE id = ?",
-                (utc_now(), conflict_id),
-            )
-            _refresh_combined(conn, conflict["kp_id"])
-            return _conflict_detail(conn, conflict_id)
 
-        value = conflict["anki_value"]
-        media_errors = _pull_media(conn, client, local_media_refs(value))
-        if media_errors:
-            note = "；".join(media_errors)
-            conn.execute(
-                "UPDATE anki_conflict SET note = ? WHERE id = ?",
-                (note, conflict_id),
-            )
-            conn.commit()
-            raise AnkiError(note)
-
-        previous_back = card["back_md"] or ""
-        previous_base = conn.execute(
-            "SELECT pushed_back_hash FROM anki_sync WHERE kp_id = ?",
-            (conflict["kp_id"],),
-        ).fetchone()
         conn.execute(
-            "UPDATE knowledge_point SET back_md = ?, updated_at = ? WHERE id = ?",
-            (value, utc_now(), conflict["kp_id"]),
+            "UPDATE sync_conflict SET status = 'resolved', resolution = ?, "
+            "resolved_at = ? WHERE id = ?",
+            (choice, utc_now(), conflict_id),
         )
-        conn.execute(
-            "UPDATE anki_sync SET pushed_back_hash = ? WHERE kp_id = ?",
-            (field_hash(value), conflict["kp_id"]),
-        )
-        conn.execute(
-            "UPDATE anki_conflict SET status = 'resolved', resolution = 'anki', "
-            "system_value = ?, base_hash = ?, resolved_at = ? WHERE id = ?",
-            (
-                previous_back,
-                previous_base["pushed_back_hash"] if previous_base else None,
-                utc_now(),
-                conflict_id,
-            ),
-        )
-        _refresh_combined(conn, conflict["kp_id"])
+        _force_push_all(conn, card["id"])
         return _conflict_detail(conn, conflict_id)
 
 
 def undo_conflict(conflict_id: int) -> dict:
-    """撤销「用 Anki」，恢复系统原背面并重新打开冲突。"""
+    """撤销「用目标」，恢复系统快照并重新打开冲突。"""
     with closing(connect()) as conn, conn:
         conflict = conn.execute(
-            "SELECT * FROM anki_conflict WHERE id = ?", (conflict_id,)
+            "SELECT * FROM sync_conflict WHERE id = ?", (conflict_id,)
         ).fetchone()
         if conflict is None:
             raise LookupError("冲突不存在")
-        if conflict["status"] != "resolved" or conflict["resolution"] != "anki":
-            raise RuntimeError("只有「用 Anki」的解决可以撤销")
+        if conflict["status"] != "resolved" or conflict["resolution"] != "target":
+            raise RuntimeError("只有「用目标」的解决可以撤销")
 
         conn.execute(
-            "DELETE FROM anki_conflict WHERE kp_id = ? AND field = ? "
-            "AND status = 'pending' AND id != ?",
-            (conflict["kp_id"], conflict["field"], conflict_id),
-        )
-        conn.execute(
-            "UPDATE knowledge_point SET back_md = ?, updated_at = ? WHERE id = ?",
-            (conflict["system_value"], utc_now(), conflict["kp_id"]),
-        )
-        conn.execute(
-            "UPDATE anki_sync SET pushed_back_hash = ?, pushed_hash = NULL "
-            "WHERE kp_id = ?",
-            (conflict["base_hash"], conflict["kp_id"]),
-        )
-        conn.execute(
-            "UPDATE anki_conflict SET status = 'pending', resolution = NULL, "
-            "resolved_at = NULL, system_hash = ?, note = ? WHERE id = ?",
+            "UPDATE knowledge_point SET front_md = ?, back_md = ?, front_norm = ?, "
+            "updated_at = ? WHERE id = ?",
             (
-                field_hash(conflict["system_value"]),
-                "已撤销「用 Anki」，冲突重新打开。",
-                conflict_id,
+                conflict["system_front"],
+                conflict["system_back"],
+                normalize_front(conflict["system_front"]),
+                utc_now(),
+                conflict["kp_id"],
             ),
         )
+        conn.execute(
+            "UPDATE sync_conflict SET status = 'pending', resolution = NULL, "
+            "resolved_at = NULL, note = ? WHERE id = ?",
+            ("已撤销「用目标」，冲突重新打开。", conflict_id),
+        )
+        _force_push_all(conn, conflict["kp_id"])
         return _conflict_detail(conn, conflict_id)
 
 
-def _add_note(
-    client: AnkiClient, model_name: str, item: dict, fields: dict
-) -> int | None:
-    return client.call(
-        "addNote",
-        note={
-            "deckName": item["deck"],
-            "modelName": model_name,
-            "fields": fields,
-            "tags": [],
-            "options": {
-                "allowDuplicate": False,
-                "duplicateScope": "deck",
-            },
-        },
-    )
-
-
-def _move_to_deck(client: AnkiClient, note_id: int, deck: str) -> None:
-    cards = client.call("findCards", query=f"nid:{note_id}")
-    if cards:
-        client.call("changeDeck", cards=cards, deck=deck)
-
-
-def sync_anki(
-    client: AnkiClient,
-    model_name: str,
-    sync_enabled: bool,
-    progress: Progress | None = None,
-) -> dict:
-    _notify(progress, "校验 Anki", 0, 1)
-    client.validate(model_name)
-    _notify(progress, "校验 Anki", 1, 1)
-
-    if not sync_enabled:
-        return {"backup": None, "sync": "disabled"}
-
-    _notify(progress, "备份集合", 0, 1)
-    backup = backup_anki()
-    _notify(progress, "备份集合", 1, 1)
-    _notify(progress, "同步 AnkiWeb", 0, 1)
-    client.call("sync", timeout=600)
-    client.call("syncMedia", timeout=600)
-    _notify(progress, "同步 AnkiWeb", 1, 1)
-    return {"backup": backup, "sync": "ok"}
+def _pending_push_count(conn, target_id: int | None = None) -> int:
+    clause = "AND gt.target_id = ?" if target_id is not None else ""
+    params = (target_id,) if target_id is not None else ()
+    rows = conn.execute(
+        f"""
+        SELECT kp.id, kp.front_md, kp.back_md, m.path AS module_path,
+               gt.target_id, s.pushed_hash
+        FROM knowledge_point kp
+        JOIN group_target gt ON gt.group_id = kp.group_id
+        JOIN anki_target t ON t.id = gt.target_id AND t.enabled = 1
+        LEFT JOIN module m ON m.id = kp.module_id
+        LEFT JOIN anki_sync s
+          ON s.kp_id = kp.id AND s.target_id = gt.target_id
+        WHERE kp.status = 'ready' {clause}
+        """,
+        params,
+    ).fetchall()
+    pending = 0
+    for row in rows:
+        deck = _deck_name(row["module_path"])
+        media = _markdown_media(row["front_md"], row["back_md"])
+        signature = _content_hash(row["front_md"], row["back_md"], deck, media)
+        if signature != row["pushed_hash"]:
+            pending += 1
+    return pending
 
 
 def summary() -> dict:
-    """本地同步概况：状态计数、待推送数量、最近推送与失败。"""
+    """本地同步概况：状态计数、待推送、每目标统计与最近失败。"""
     with closing(connect()) as conn:
         counts = {
             row["status"]: row["count"]
@@ -1683,38 +1986,31 @@ def summary() -> dict:
                 "SELECT status, COUNT(*) AS count FROM knowledge_point GROUP BY status"
             )
         }
-        rows = conn.execute(
-            """
-            SELECT kp.front_md, kp.back_md, m.path AS module_path, s.pushed_hash
-            FROM knowledge_point kp
-            LEFT JOIN module m ON m.id = kp.module_id
-            LEFT JOIN anki_sync s ON s.kp_id = kp.id
-            WHERE kp.status = 'ready'
-            """
-        ).fetchall()
         matched = conn.execute(
-            "SELECT COUNT(*) AS value FROM knowledge_point WHERE anki_note_id IS NOT NULL"
+            "SELECT COUNT(DISTINCT kp_id) AS value FROM anki_sync "
+            "WHERE anki_note_id IS NOT NULL AND detached = 0"
         ).fetchone()["value"]
         last_push = conn.execute(
             "SELECT MAX(pushed_at) AS value FROM anki_sync"
         ).fetchone()["value"]
         failures = [
-            {"kp_id": row["kp_id"], "error": row["last_error"]}
+            {"kp_id": row["kp_id"], "target_id": row["target_id"], "error": row["last_error"]}
             for row in conn.execute(
-                "SELECT kp_id, last_error FROM anki_sync "
+                "SELECT kp_id, target_id, last_error FROM anki_sync "
                 "WHERE last_error IS NOT NULL ORDER BY kp_id LIMIT 10"
             )
         ]
         conflicts = conn.execute(
-            "SELECT COUNT(*) AS value FROM anki_conflict WHERE status = 'pending'"
+            "SELECT COUNT(*) AS value FROM sync_conflict WHERE status = 'pending'"
         ).fetchone()["value"]
-
-    pending = 0
-    for row in rows:
-        deck = _deck_name(row["module_path"])
-        media = _markdown_media(row["front_md"], row["back_md"])
-        if _content_hash(row["front_md"], row["back_md"], deck, media) != row["pushed_hash"]:
-            pending += 1
+        target_rows = targets.list_targets(conn)
+        target_items = []
+        for row in target_rows:
+            stats = targets.target_stats(conn, int(row["id"]))
+            if row["enabled"]:
+                stats["pending"] = _pending_push_count(conn, int(row["id"]))
+            target_items.append({**dict(row), **stats})
+        pending = _pending_push_count(conn)
 
     return {
         "cards": {
@@ -1727,4 +2023,5 @@ def summary() -> dict:
         "last_push_at": last_push,
         "conflicts": conflicts,
         "failures": failures,
+        "targets": target_items,
     }

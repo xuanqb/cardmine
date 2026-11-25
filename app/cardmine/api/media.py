@@ -40,9 +40,15 @@ def _references(conn) -> set[str]:
     ):
         refs |= local_media_refs(row["front_md"], row["back_md"], row["ai_back_md"])
     for row in conn.execute(
-        "SELECT system_value, anki_value FROM anki_conflict WHERE status = 'pending'"
+        "SELECT system_front, system_back, target_front, target_back "
+        "FROM sync_conflict WHERE status = 'pending'"
     ):
-        refs |= local_media_refs(row["system_value"], row["anki_value"])
+        refs |= local_media_refs(
+            row["system_front"],
+            row["system_back"],
+            row["target_front"],
+            row["target_back"],
+        )
     for row in conn.execute("SELECT front_md FROM kp_alias"):
         refs |= local_media_refs(row["front_md"])
     for row in conn.execute("SELECT raw_html, clean_md FROM post"):

@@ -6,9 +6,9 @@ from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-from .. import config, groups
+from .. import groups
 from ..ai import AIClient, AIError
-from ..anki import AnkiClient, push
+from ..anki import push_targets
 from ..db import connect, utc_now
 from .clean import clean_post
 from .extract import extract_mentions
@@ -186,17 +186,19 @@ def _auto_push(
 ) -> None:
     _notify(progress, "推送 Anki", 0, 1)
     try:
-        client = AnkiClient(settings["anki_url"] or config.ANKI_CONNECT_URL)
-        result = push(
-            client,
+        result = push_targets(
             settings["anki_model"],
             settings["anki_sync_enabled"],
+            settings.get("anki_conflict_guard", True),
             progress,
         )
         report.push = {
-            key: result[key]
-            for key in ("changed", "added", "updated", "failed", "sync")
+            key: result.get(key, 0)
+            for key in ("changed", "added", "updated", "failed")
         }
+        report.push["sync"] = result.get("sync", "skipped")
+        if result.get("errors"):
+            report.errors.extend(result["errors"][:5])
     except Exception as exc:  # noqa: BLE001 - 推送失败不影响抓取结果
         report.errors.append(f"自动推送失败: {exc}")
     finally:

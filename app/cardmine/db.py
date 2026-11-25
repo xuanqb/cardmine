@@ -80,7 +80,19 @@ def _normalize_ai_roots(conn: sqlite3.Connection) -> None:
             "UPDATE module SET parent_id = ?, sort = ? WHERE id = ?",
             (target["id"], sort, root["id"]),
         )
-        # 被并入的顶层模块不再是组，归属它的卡片、别名与来源改指向新组
+        # 被并入的顶层模块不再是组；目标的组映射也要迁移到新组
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'group_target'"
+        ).fetchone():
+            conn.execute(
+                "INSERT OR IGNORE INTO group_target(group_id, target_id) "
+                "SELECT ?, target_id FROM group_target WHERE group_id = ?",
+                (target["id"], root["id"]),
+            )
+            conn.execute(
+                "DELETE FROM group_target WHERE group_id = ?", (root["id"],)
+            )
+        # 归属它的卡片、别名与来源改指向新组
         conn.execute(
             "UPDATE knowledge_point SET group_id = ? WHERE group_id = ?",
             (target["id"], root["id"]),
