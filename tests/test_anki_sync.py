@@ -367,6 +367,31 @@ class SyncTestCase(unittest.TestCase):
             ]
 
 
+class PendingCountTest(SyncTestCase):
+    def test_edit_after_push_counts_as_pending(self):
+        kp_id = self.make_card("front", "back")
+        client = FakeClient()
+        client.add_note("front", "back", note_id=88)
+        self.run_sync(client)
+        self.assertEqual(service.summary()["cards"]["pending_push"], 0)
+
+        with closing(db.connect()) as conn, conn:
+            conn.execute(
+                "UPDATE knowledge_point SET back_md = 'edited' WHERE id = ?",
+                (kp_id,),
+            )
+
+        self.assertEqual(service.summary()["cards"]["pending_push"], 1)
+        self.assertEqual(self.target_pending(1), 1)
+
+    def target_pending(self, target_id):
+        from cardmine.api.anki import _target_payload
+
+        with closing(db.connect()) as conn:
+            row = targets.get_target(conn, target_id)
+            return _target_payload(conn, row)["pending"]
+
+
 class FieldActionTest(unittest.TestCase):
     def test_field_action(self):
         base = service.field_hash("base")

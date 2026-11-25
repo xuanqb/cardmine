@@ -332,6 +332,7 @@ legend {
 }
 
 .field input,
+.field select,
 .field textarea {
   width: 100%;
   padding: 8px 10px;
@@ -343,6 +344,16 @@ legend {
   font-size: 13px;
 }
 
+.field select {
+  appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%23656d76' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 11px 7px;
+  cursor: pointer;
+}
+
 .field textarea {
   min-height: 96px;
   resize: vertical;
@@ -350,6 +361,7 @@ legend {
 }
 
 .field input:focus,
+.field select:focus,
 .field textarea:focus {
   outline: none;
   border-color: var(--brand);
@@ -463,7 +475,7 @@ button:disabled {
   color: var(--text-muted);
 }
 
-.import-form input[type="text"] {
+#md-form input[type="text"] {
   width: 160px;
   padding: 9px 12px;
   border: 1px solid var(--border);
@@ -529,6 +541,11 @@ button:disabled {
   width: 100%;
   min-height: 220px;
   resize: vertical;
+}
+
+#text-form .field-row {
+  grid-template-columns: minmax(0, 1fr) minmax(170px, 220px);
+  align-items: end;
 }
 
 .preview-box {
@@ -2972,17 +2989,6 @@ a.mention-title:hover {
 
 .export-actions {
   margin-top: 16px;
-}
-
-.field select {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
 }
 
 @media (max-width: 980px) {

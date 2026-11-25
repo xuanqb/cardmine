@@ -11,6 +11,7 @@ from ..anki.client import AnkiClient, AnkiError
 from ..anki.service import (
     audit_target,
     list_conflicts,
+    pending_push_count,
     pull_target,
     push_targets,
     resolve_conflict,
@@ -201,8 +202,12 @@ def _backups(limit: int = 7) -> list[dict]:
 
 def _target_payload(conn, row) -> dict:
     item = dict(row)
-    item["group_ids"] = targets.target_group_ids(conn, int(row["id"]))
-    item.update(targets.target_stats(conn, int(row["id"])))
+    target_id = int(row["id"])
+    item["group_ids"] = targets.target_group_ids(conn, target_id)
+    item.update(targets.target_stats(conn, target_id))
+    if row["enabled"]:
+        # 与顶部汇总保持一致：按内容哈希判断，已推送但内容变动也算待推送
+        item["pending"] = pending_push_count(conn, target_id)
     return item
 
 

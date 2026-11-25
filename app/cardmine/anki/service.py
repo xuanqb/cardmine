@@ -2361,7 +2361,7 @@ def undo_conflict(conflict_id: int) -> dict:
         return _conflict_detail(conn, conflict_id)
 
 
-def _pending_push_count(conn, target_id: int | None = None) -> int:
+def pending_push_count(conn, target_id: int | None = None) -> int:
     clause = "AND gt.target_id = ?" if target_id is not None else ""
     params = (target_id,) if target_id is not None else ()
     rows = conn.execute(
@@ -2419,9 +2419,9 @@ def summary() -> dict:
         for row in target_rows:
             stats = targets.target_stats(conn, int(row["id"]))
             if row["enabled"]:
-                stats["pending"] = _pending_push_count(conn, int(row["id"]))
+                stats["pending"] = pending_push_count(conn, int(row["id"]))
             target_items.append({**dict(row), **stats})
-        pending = _pending_push_count(conn)
+        pending = pending_push_count(conn)
 
     return {
         "cards": {
