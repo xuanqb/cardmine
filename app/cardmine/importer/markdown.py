@@ -19,11 +19,31 @@ _NUMBER_PREFIX = re.compile(
 )
 _ORDERED_ITEM = re.compile(r"^\s{0,3}\d+\s*[.、．]\s*")
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(\s*([^)\s]+)([^)]*)\)")
+_HTML_IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_HTML_SRC = re.compile(
+    r"""(\bsrc\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""",
+    re.IGNORECASE,
+)
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
 def _is_remote(src: str) -> bool:
     return src.startswith(("http://", "https://", "//", "data:"))
+
+
+def _local_image_name(src: str) -> str | None:
+    if _is_remote(src):
+        return None
+    name = PurePosixPath(normalize_media_ref(src).replace("\\", "/")).name
+    return name or None
+
+
+def _src_value(match: re.Match) -> str:
+    if match.group(2) is not None:
+        return match.group(2)
+    if match.group(3) is not None:
+        return match.group(3)
+    return match.group(4) or ""
 
 
 @dataclass
@@ -87,30 +107,38 @@ def _dedent(body: list[str]) -> str:
 def _normalize_images(text: str) -> str:
     """把本地图片引用收敛成扁平文件名，预览会按 /media/<name> 解析。"""
 
-    def repl(match: re.Match) -> str:
-        alt, src = match.group(1), match.group(2)
-        if _is_remote(src):
+    def md_repl(match: re.Match) -> str:
+        name = _local_image_name(match.group(2))
+        if name is None:
             return match.group(0)
-        name = PurePosixPath(
-            normalize_media_ref(src).replace("\\", "/")
-        ).name
-        if not name:
-            return match.group(0)
-        return f"![{alt}]({name})"
+        return f"![{match.group(1)}]({name})"
 
-    return _MD_IMAGE.sub(repl, text)
+    def src_repl(match: re.Match) -> str:
+        name = _local_image_name(_src_value(match))
+        if name is None:
+            return match.group(0)
+        quote = '"' if match.group(2) is not None else ("'" if match.group(3) is not None else "")
+        return f"{match.group(1)}{quote}{name}{quote}"
+
+    def img_repl(match: re.Match) -> str:
+        return _HTML_SRC.sub(src_repl, match.group(0))
+
+    return _HTML_IMG_TAG.sub(img_repl, _MD_IMAGE.sub(md_repl, text))
 
 
 def _image_names(text: str) -> list[str]:
-    names = []
-    for match in _MD_IMAGE.finditer(text):
-        if _is_remote(match.group(2)):
-            continue
-        name = PurePosixPath(
-            normalize_media_ref(match.group(2)).replace("\\", "/")
-        ).name
+    names: list[str] = []
+
+    def add(name: str | None) -> None:
         if name and name not in names:
             names.append(name)
+
+    for match in _MD_IMAGE.finditer(text):
+        add(_local_image_name(match.group(2)))
+    for tag in _HTML_IMG_TAG.finditer(text):
+        match = _HTML_SRC.search(tag.group(0))
+        if match is not None:
+            add(_local_image_name(_src_value(match)))
     return names
 
 
