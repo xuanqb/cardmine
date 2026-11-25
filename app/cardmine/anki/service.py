@@ -459,15 +459,21 @@ def _push_media(
     return uploaded, conflicts, errors
 
 
-_TEMPLATE_MEDIA_RE = re.compile(
-    r"""(?:src|href)\s*=\s*["']([^"']+)["']|url\(\s*["']?([^"')]+)["']?\s*\)""",
-    re.IGNORECASE,
-)
 _TEMPLATE_MEDIA_EXTS = {
     "js", "css", "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp",
     "mp3", "ogg", "wav", "m4a", "flac", "mp4", "webm",
     "woff", "woff2", "ttf", "otf",
 }
+_TEMPLATE_MEDIA_RE = re.compile(
+    r"""(?:src|href)\s*=\s*["']([^"']+)["']|url\(\s*["']?([^"')]+)["']?\s*\)""",
+    re.IGNORECASE,
+)
+# 模板内联 JS 里常见 getScript("markdown-it.min.js") 这类动态加载
+_QUOTED_MEDIA_RE = re.compile(
+    r"""["']([^"'\s/\\]+\.(?:%s))["']"""
+    % "|".join(sorted(_TEMPLATE_MEDIA_EXTS)),
+    re.IGNORECASE,
+)
 
 
 def _template_media_refs(css: str, templates: dict) -> set[str]:
@@ -477,18 +483,24 @@ def _template_media_refs(css: str, templates: dict) -> set[str]:
         texts.append(body.get("Front") or "")
         texts.append(body.get("Back") or "")
     refs: set[str] = set()
+
+    def _add(raw: str) -> None:
+        name = (raw or "").strip()
+        if name.startswith("./"):
+            name = name[2:]
+        if not name or name.startswith(("http:", "https:", "data:", "//", "#")):
+            return
+        if "/" in name or "\\" in name or name in (".", ".."):
+            return
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext in _TEMPLATE_MEDIA_EXTS:
+            refs.add(name)
+
     for text in texts:
         for match in _TEMPLATE_MEDIA_RE.finditer(text):
-            name = (match.group(1) or match.group(2) or "").strip()
-            if name.startswith("./"):
-                name = name[2:]
-            if not name or name.startswith(("http:", "https:", "data:", "//", "#")):
-                continue
-            if "/" in name or "\\" in name or name in (".", ".."):
-                continue
-            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            if ext in _TEMPLATE_MEDIA_EXTS:
-                refs.add(name)
+            _add(match.group(1) or match.group(2) or "")
+        for match in _QUOTED_MEDIA_RE.finditer(text):
+            _add(match.group(1))
     return refs
 
 

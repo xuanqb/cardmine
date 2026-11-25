@@ -708,6 +708,26 @@ class ModelStyleTest(SyncTestCase):
             with self.assertRaises(AnkiError):
                 service.sync_model_style(self.friend_id, "Basic")
 
+    def test_sync_style_copies_dynamically_loaded_script_media(self):
+        templates = {
+            "卡片 1": {
+                "Front": (
+                    '<script>getScript("markdown-it.min.js")</script>'
+                    '<script src="https://cdn.example.com/highlight.min.js"></script>'
+                    "{{Front}}"
+                ),
+                "Back": "{{FrontSide}}",
+            }
+        }
+        payload = base64.b64encode(b"md").decode("ascii")
+        with self._clients({}, source_templates=templates):
+            self.source.media["markdown-it.min.js"] = payload
+            self.source.media["highlight.min.js"] = "aGlnaGxpZ2h0"
+            result = service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(result["media_copied"], 1)
+        self.assertIn("markdown-it.min.js", self.target.media)
+        self.assertNotIn("highlight.min.js", self.target.media)
+
     def test_sync_style_copies_template_media(self):
         templates = {
             "Card 1": {
