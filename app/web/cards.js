@@ -46,8 +46,34 @@ let deleteUnclaimedNotes = false;
 
 const FILTER_KEY = "cardmine.cards.filters";
 const SELECTION_KEY = "cardmine.cards.selection";
+const COLLAPSED_KEY = "cardmine.cards.collapsed";
 const SORT_VALUES = new Set(["updated_desc", "mentions_desc", "recent_desc"]);
 const STATUS_VALUES = new Set(["draft", "ready", "archived"]);
+
+let collapsedModules = loadCollapsedModules();
+
+function loadCollapsedModules() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]");
+    if (!Array.isArray(stored)) return new Set();
+    return new Set(
+      stored.map(Number).filter((value) => Number.isInteger(value)),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedModules() {
+  try {
+    localStorage.setItem(
+      COLLAPSED_KEY,
+      JSON.stringify([...collapsedModules]),
+    );
+  } catch {
+    // 存储不可用时只影响持久化
+  }
+}
 
 function restoreState() {
   const params = new URLSearchParams(window.location.search);
@@ -205,16 +231,28 @@ function buildTree(nodes, depth = 0) {
       wrapper.appendChild(row);
       wrapper.appendChild(childBox);
 
-      toggle.textContent = "▾";
-      toggle.setAttribute("aria-expanded", "true");
-      toggle.setAttribute("aria-label", `折叠 ${node.name}`);
+      const moduleId = Number(node.id);
+      const collapsed = collapsedModules.has(moduleId);
+      wrapper.classList.toggle("collapsed", collapsed);
+      toggle.textContent = collapsed ? "▸" : "▾";
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+      toggle.setAttribute(
+        "aria-label",
+        `${collapsed ? "展开" : "折叠"} ${node.name}`,
+      );
       toggle.addEventListener("click", () => {
-        const collapsed = wrapper.classList.toggle("collapsed");
-        toggle.textContent = collapsed ? "▸" : "▾";
-        toggle.setAttribute("aria-expanded", String(!collapsed));
+        const isCollapsed = wrapper.classList.toggle("collapsed");
+        if (isCollapsed) {
+          collapsedModules.add(moduleId);
+        } else {
+          collapsedModules.delete(moduleId);
+        }
+        saveCollapsedModules();
+        toggle.textContent = isCollapsed ? "▸" : "▾";
+        toggle.setAttribute("aria-expanded", String(!isCollapsed));
         toggle.setAttribute(
           "aria-label",
-          `${collapsed ? "展开" : "折叠"} ${node.name}`,
+          `${isCollapsed ? "展开" : "折叠"} ${node.name}`,
         );
       });
       row.append(toggle, button);
