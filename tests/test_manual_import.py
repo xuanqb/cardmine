@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "app"))
 
 from cardmine import config, db  # noqa: E402
 from cardmine.ai import AIError  # noqa: E402
-from cardmine.collect.service import run_manual_post  # noqa: E402
+from cardmine.collect.service import delete_manual_post, run_manual_post  # noqa: E402
 
 SETTINGS = {
     "ai_base_url": "",
@@ -117,6 +117,60 @@ class ManualImportTest(unittest.TestCase):
             ).fetchone()
             self.assertEqual(feed["url"], f"manual://group/{self.group_id}")
             self.assertEqual(feed["enabled"], 0)
+
+    def test_delete_post_removes_its_draft_cards(self):
+        result = self.run_import(
+            "标题", "正文", [mention("第一个问题"), mention("第二个问题")]
+        )
+        deleted = delete_manual_post(result["post_id"])
+        self.assertEqual(deleted["removed_cards"], 2)
+
+        with closing(db.connect()) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) AS value FROM post").fetchone()["value"],
+                0,
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) AS value FROM mention").fetchone()["value"],
+                0,
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) AS value FROM knowledge_point"
+                ).fetchone()["value"],
+                0,
+            )
+
+    def test_delete_keeps_answered_cards(self):
+        result = self.run_import("标题", "正文", [mention("第一个问题")])
+        with closing(db.connect()) as conn, conn:
+            conn.execute(
+                "UPDATE knowledge_point SET status = 'ready', back_md = '答案'"
+            )
+        deleted = delete_manual_post(result["post_id"])
+        self.assertEqual(deleted["removed_cards"], 0)
+        with closing(db.connect()) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) AS value FROM knowledge_point"
+                ).fetchone()["value"],
+                1,
+            )
+
+    def test_delete_rejects_regular_feed_post(self):
+        with closing(db.connect()) as conn, conn:
+            feed_id = conn.execute(
+                "INSERT INTO feed(url, name, enabled, interval_minutes, group_id) "
+                "VALUES('https://example.com/rss.xml', 'RSS', 1, 60, ?)",
+                (self.group_id,),
+            ).lastrowid
+            post_id = conn.execute(
+                "INSERT INTO post(guid, feed_id, title, fetched_at) "
+                "VALUES('g1', ?, 'RSS 面经', '2026-11-25T00:00:00+00:00')",
+                (feed_id,),
+            ).lastrowid
+        with self.assertRaises(ValueError):
+            delete_manual_post(post_id)
 
     def test_manual_feed_hidden_from_fetch_status(self):
         self.run_import("标题", "正文", [mention("第一个问题")])

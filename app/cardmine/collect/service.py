@@ -1,5 +1,6 @@
 """采集流程：抓取 RSS → 清洗 → AI 切题 → 归并 → 自动推送。"""
 
+import sqlite3
 import threading
 import time
 import uuid
@@ -335,6 +336,83 @@ def run_manual_post(
     result["items"] = items
     result["elapsed_ms"] = int((time.time() - started) * 1000)
     return result
+
+
+def delete_manual_post(post_id: int) -> dict:
+    """删除手动导入的面经及其独占的未作答卡片。"""
+    if not _run_lock.acquire(blocking=False):
+        raise ValueError("采集或导入任务正在运行，请稍后重试")
+
+    removed = 0
+    try:
+        with closing(connect()) as conn:
+            post = conn.execute(
+                "SELECT p.id, f.url AS feed_url, f.group_id AS feed_group_id "
+                "FROM post p JOIN feed f ON f.id = p.feed_id WHERE p.id = ?",
+                (post_id,),
+            ).fetchone()
+            if post is None:
+                raise ValueError("面经不存在")
+            if not (post["feed_url"] or "").startswith("manual://"):
+                raise ValueError("只能删除手动导入的面经")
+
+            kp_ids = [
+                int(row["kp_id"])
+                for row in conn.execute(
+                    "SELECT DISTINCT kp_id FROM mention "
+                    "WHERE post_id = ? AND kp_id IS NOT NULL",
+                    (post_id,),
+                )
+            ]
+            conn.execute("DELETE FROM mention WHERE post_id = ?", (post_id,))
+            conn.execute("DELETE FROM post WHERE id = ?", (post_id,))
+
+            modules: set[int] = set()
+            for kp_id in kp_ids:
+                if conn.execute(
+                    "SELECT 1 FROM mention WHERE kp_id = ?", (kp_id,)
+                ).fetchone():
+                    continue
+                row = conn.execute(
+                    "SELECT module_id, status FROM knowledge_point WHERE id = ?",
+                    (kp_id,),
+                ).fetchone()
+                if row is None or row["status"] != "draft":
+                    continue
+                if row["module_id"]:
+                    modules.add(int(row["module_id"]))
+                _delete_vectors(conn, kp_id)
+                conn.execute("DELETE FROM knowledge_point WHERE id = ?", (kp_id,))
+                removed += 1
+
+            for module_id in sorted(modules, reverse=True):
+                if conn.execute(
+                    "SELECT 1 FROM module WHERE parent_id = ?", (module_id,)
+                ).fetchone():
+                    continue
+                if conn.execute(
+                    "SELECT 1 FROM knowledge_point WHERE module_id = ?", (module_id,)
+                ).fetchone():
+                    continue
+                if conn.execute(
+                    "SELECT 1 FROM kp_alias WHERE module_id = ?", (module_id,)
+                ).fetchone():
+                    continue
+                conn.execute("DELETE FROM module WHERE id = ?", (module_id,))
+            conn.commit()
+    finally:
+        _run_lock.release()
+
+    return {"post_id": post_id, "removed_cards": removed}
+
+
+def _delete_vectors(conn, kp_id: int) -> None:
+    conn.execute("DELETE FROM kp_embedding WHERE kp_id = ?", (kp_id,))
+    try:
+        conn.execute("DELETE FROM vec_kp WHERE kp_id = ?", (kp_id,))
+    except sqlite3.OperationalError:
+        # 未启用 sqlite-vec 时没有 vec_kp 表
+        pass
 
 
 def _auto_push(

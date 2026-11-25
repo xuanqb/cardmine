@@ -6,7 +6,11 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from .. import config
-from ..collect.service import prepare_manual_post, run_manual_post
+from ..collect.service import (
+    delete_manual_post,
+    prepare_manual_post,
+    run_manual_post,
+)
 from ..db import utc_now
 from ..importer import run_import
 from ..importer.markdown import run_markdown_import
@@ -201,3 +205,12 @@ def get_job(job_id: str) -> dict:
         if job is None:
             raise HTTPException(status_code=404, detail="导入任务不存在")
         return dict(job)
+
+
+@router.delete("/posts/{post_id}")
+def delete_post(post_id: int) -> dict:
+    """删除导错组的手动面经，连同它独占的未作答卡片。"""
+    try:
+        return delete_manual_post(post_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
