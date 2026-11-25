@@ -118,6 +118,19 @@ class ManualImportTest(unittest.TestCase):
             self.assertEqual(feed["url"], f"manual://group/{self.group_id}")
             self.assertEqual(feed["enabled"], 0)
 
+    def test_manual_feed_hidden_from_fetch_status(self):
+        self.run_import("标题", "正文", [mention("第一个问题")])
+        with closing(db.connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO feed(url, name, enabled, interval_minutes) "
+                "VALUES('https://example.com/rss.xml', 'RSS', 1, 60)"
+            )
+        from cardmine.api.stats import _fetch_status
+
+        with closing(db.connect()) as conn:
+            feeds = _fetch_status(conn)["feeds"]
+        self.assertEqual([feed["url"] for feed in feeds], ["https://example.com/rss.xml"])
+
     def test_title_defaults_to_first_line(self):
         self.run_import(None, "\n# 2024 秋招 字节一面\n\n面试正文", [mention("第一个问题")])
         self.run_import("手动标题", "正文", [mention("第二个问题")])

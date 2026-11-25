@@ -78,7 +78,9 @@ def _fetch_status(conn) -> dict:
         SELECT f.id, f.name, f.url, f.interval_minutes, f.last_fetched_at,
                (SELECT fl.id FROM fetch_log fl WHERE fl.feed_id = f.id
                 ORDER BY fl.id DESC LIMIT 1) AS latest_log_id
-        FROM feed f ORDER BY f.id
+        FROM feed f
+        WHERE f.url NOT LIKE 'manual://%'
+        ORDER BY f.id
         """
     ).fetchall()
 
