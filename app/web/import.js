@@ -230,3 +230,219 @@ mdForm.addEventListener("submit", async (event) => {
     syncMdButtonLabel();
   }
 });
+
+const textForm = document.getElementById("text-form");
+const textTitle = document.getElementById("text-title");
+const textGroup = document.getElementById("text-group");
+const textBody = document.getElementById("text-body");
+const textPreviewButton = document.getElementById("text-preview");
+const textError = document.getElementById("text-error");
+const textPreviewBox = document.getElementById("text-preview-box");
+const textMentions = document.getElementById("text-mentions");
+const textCount = document.getElementById("text-count");
+const textAll = document.getElementById("text-all");
+const textCommit = document.getElementById("text-commit");
+const textCommitHint = document.getElementById("text-commit-hint");
+const textReport = document.getElementById("text-report");
+
+const TOPIC_LABELS = { tech: "技术", algo: "算法", nontech: "非技术" };
+let previewItems = [];
+let previewSnapshot = "";
+
+async function fetchJSON(url, options = {}) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data.detail) {
+        message =
+          typeof data.detail === "string"
+            ? data.detail
+            : JSON.stringify(data.detail);
+      }
+    } catch {
+      // 保留状态码
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+async function loadTextGroups() {
+  try {
+    const roots = await fetchJSON("/api/modules");
+    textGroup.replaceChildren();
+    if (!roots.length) {
+      const option = document.createElement("option");
+      option.textContent = "请先在卡片页创建分组";
+      option.value = "";
+      textGroup.append(option);
+      textPreviewButton.disabled = true;
+      return;
+    }
+    for (const root of roots) {
+      const option = document.createElement("option");
+      option.value = String(root.id);
+      option.textContent = root.name;
+      textGroup.append(option);
+    }
+  } catch (error) {
+    textError.hidden = false;
+    textError.textContent = `读取分组失败：${error.message}`;
+  }
+}
+
+function selectedTextItems() {
+  return Array.from(
+    textMentions.querySelectorAll('input[type="checkbox"]:checked'),
+  ).map((box) => previewItems[Number(box.dataset.index)]);
+}
+
+function syncCommitHint() {
+  const count = selectedTextItems().length;
+  textCommit.disabled = count === 0;
+  textCommitHint.textContent = count ? `将导入 ${count} 题` : "至少选择一题";
+}
+
+function renderTextPreview(items) {
+  textMentions.replaceChildren();
+  items.forEach((item, index) => {
+    const row = document.createElement("label");
+    row.className = "preview-item";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = true;
+    box.dataset.index = String(index);
+    box.addEventListener("change", () => {
+      textAll.checked = selectedTextItems().length === previewItems.length;
+      syncCommitHint();
+    });
+
+    const body = document.createElement("div");
+    body.className = "preview-item-body";
+    const question = document.createElement("p");
+    question.className = "preview-question";
+    question.textContent = item.question;
+    const meta = document.createElement("p");
+    meta.className = "preview-meta";
+    meta.textContent = [
+      item.module || "未指定模块",
+      item.section || "",
+      TOPIC_LABELS[item.topic] || item.topic,
+      item.subtype === "personal" ? "个人经历" : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    body.append(question, meta);
+    row.append(box, body);
+    textMentions.append(row);
+  });
+  textCount.textContent = `共 ${items.length} 题`;
+  textAll.checked = true;
+  syncCommitHint();
+}
+
+textAll.addEventListener("change", () => {
+  for (const box of textMentions.querySelectorAll('input[type="checkbox"]')) {
+    box.checked = textAll.checked;
+  }
+  syncCommitHint();
+});
+
+textForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const groupId = Number(textGroup.value);
+  const text = textBody.value.trim();
+  textError.hidden = true;
+  textReport.hidden = true;
+  if (!groupId) {
+    textError.hidden = false;
+    textError.textContent = "请先选择目标组";
+    return;
+  }
+  if (!text) {
+    textError.hidden = false;
+    textError.textContent = "请粘贴面经正文";
+    return;
+  }
+
+  textPreviewButton.disabled = true;
+  textPreviewButton.textContent = "解析中…";
+  try {
+    const data = await fetchJSON("/api/import/text/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: textTitle.value.trim() || null,
+        text,
+        group_id: groupId,
+      }),
+    });
+    previewItems = data.mentions || [];
+    if (!previewItems.length) {
+      textPreviewBox.hidden = true;
+      textError.hidden = false;
+      textError.textContent = "没有识别到面试题，试试补充上下文或换一段文本";
+      return;
+    }
+    renderTextPreview(previewItems);
+    previewSnapshot = `${groupId}\n${text}`;
+    textPreviewBox.hidden = false;
+  } catch (error) {
+    textPreviewBox.hidden = true;
+    textError.hidden = false;
+    textError.textContent = error.message;
+  } finally {
+    textPreviewButton.disabled = false;
+    textPreviewButton.textContent = "解析预览";
+  }
+});
+
+textCommit.addEventListener("click", async () => {
+  const items = selectedTextItems();
+  if (!items.length) return;
+  const groupId = Number(textGroup.value);
+  const text = textBody.value.trim();
+  if (previewSnapshot !== `${groupId}\n${text}`) {
+    textError.hidden = false;
+    textError.textContent = "正文或分组已修改，请重新解析预览";
+    return;
+  }
+  textError.hidden = true;
+  textCommit.disabled = true;
+  textCommit.textContent = "导入中…";
+  try {
+    const report = await fetchJSON("/api/import/text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: textTitle.value.trim() || null,
+        text,
+        group_id: groupId,
+        mentions: items,
+      }),
+    });
+    textReport.hidden = false;
+    setText("text-r-mentions", report.mentions);
+    setText("text-r-attached", report.attached);
+    setText("text-r-created", report.created);
+    setText("text-r-candidates", report.candidates);
+    setText("text-r-embeddings", report.embeddings);
+    renderList("text-r-errors", "错误", report.errors);
+    textPreviewBox.hidden = true;
+    previewItems = [];
+    previewSnapshot = "";
+    textBody.value = "";
+    textBody.focus();
+  } catch (error) {
+    textError.hidden = false;
+    textError.textContent = error.message;
+  } finally {
+    textCommit.disabled = false;
+    textCommit.textContent = "确认导入";
+    syncCommitHint();
+  }
+});
+
+loadTextGroups();

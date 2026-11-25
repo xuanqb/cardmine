@@ -110,6 +110,64 @@
         <div class="report-detail" id="md-errors" hidden></div>
       </div>
     </section>
+    <section class="panel">
+      <h2>粘贴旧面经</h2>
+      <p class="hint">
+        整段粘贴一场面试的文字，AI 会切出题目并计入出现次数；先预览、勾选后再入库。
+        必须选择目标组，切题和新建模块都会限制在该组内。
+      </p>
+
+      <form id="text-form" class="import-form">
+        <div class="field-row">
+          <label class="field">
+            <span>标题（选填）</span>
+            <input type="text" id="text-title" maxlength="120"
+                   placeholder="留空时取正文第一行">
+          </label>
+          <label class="field">
+            <span>目标组</span>
+            <select id="text-group" required></select>
+          </label>
+        </div>
+        <label class="field">
+          <span>面经正文</span>
+          <textarea id="text-body" rows="12" maxlength="16000" required
+                    placeholder="直接粘贴整篇面经文字，题目和回答混排也可以。"></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit" id="text-preview">解析预览</button>
+          <span class="save-hint">标题留空时取正文第一行</span>
+        </div>
+      </form>
+
+      <div class="alert" id="text-error" hidden></div>
+
+      <div class="preview-box" id="text-preview-box" hidden>
+        <div class="preview-head">
+          <h3>切题结果 <span class="preview-count" id="text-count"></span></h3>
+          <label class="check">
+            <input type="checkbox" id="text-all" checked> 全选
+          </label>
+        </div>
+        <div class="preview-list" id="text-mentions"></div>
+        <div class="actions">
+          <button type="button" id="text-commit">确认导入</button>
+          <span class="save-hint" id="text-commit-hint"></span>
+        </div>
+      </div>
+
+      <div class="report" id="text-report" hidden>
+        <h3>导入报告</h3>
+        <dl class="report-grid">
+          <div><dt>入库题目</dt><dd id="text-r-mentions">0</dd></div>
+          <div><dt>关联已有卡</dt><dd id="text-r-attached">0</dd></div>
+          <div><dt>新建卡片</dt><dd id="text-r-created">0</dd></div>
+          <div><dt>待确认</dt><dd id="text-r-candidates">0</dd></div>
+          <div><dt>向量补全</dt><dd id="text-r-embeddings">0</dd></div>
+        </dl>
+        <div class="report-detail" id="text-r-errors" hidden></div>
+      </div>
+    </section>
   </main>
 
   <script src="/static/import.js"></script>

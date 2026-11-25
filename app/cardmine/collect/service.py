@@ -2,6 +2,7 @@
 
 import threading
 import time
+import uuid
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from typing import Callable
@@ -11,7 +12,7 @@ from ..ai import AIClient, AIError
 from ..anki import push_targets
 from ..db import connect, utc_now
 from .clean import clean_post
-from .extract import extract_mentions
+from .extract import MAX_INPUT_CHARS, extract_mentions, normalize_mentions
 from .merge import Merger, ensure_module
 from .rss import FeedError, fetch_feed
 
@@ -140,7 +141,20 @@ def _process_post(
 
     conn.execute("DELETE FROM mention WHERE post_id = ?", (post_id,))
     report.processed_posts += 1
+    _store_mentions(conn, merger, post_id, group, group_id, mentions, report)
+    conn.execute("UPDATE post SET ai_status='done' WHERE id=?", (post_id,))
+    conn.commit()
 
+
+def _store_mentions(
+    conn,
+    merger: Merger,
+    post_id: int,
+    group,
+    group_id: int | None,
+    mentions: list[dict],
+    report: FetchReport,
+) -> None:
     for seq, item in enumerate(mentions, start=1):
         module_id = (
             ensure_module(conn, item["module"], "ai", group) if item["module"] else None
@@ -177,8 +191,130 @@ def _process_post(
         elif action == "candidate":
             report.candidates += 1
 
-    conn.execute("UPDATE post SET ai_status='done' WHERE id=?", (post_id,))
-    conn.commit()
+
+def _manual_client(settings: dict) -> AIClient:
+    return AIClient(
+        settings.get("ai_base_url", ""),
+        settings.get("ai_api_key", ""),
+        settings.get("ai_chat_model", ""),
+        settings.get("ai_embedding_model", ""),
+        settings.get("ai_embedding_base_url", ""),
+        settings.get("ai_embedding_api_key", ""),
+    )
+
+
+def _manual_text(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("面经正文不能为空")
+    if len(text) > MAX_INPUT_CHARS:
+        raise ValueError(f"正文超过 {MAX_INPUT_CHARS} 字，请拆分后分次导入")
+    return text
+
+
+def _manual_group(conn, group_id: int):
+    group = groups.get_group(conn, group_id)
+    if group is None:
+        raise ValueError("请选择有效的顶层组")
+    return group
+
+
+def _manual_title(title: str | None, text: str) -> str:
+    title = (title or "").strip()
+    if title:
+        return title[:200]
+    for line in text.splitlines():
+        candidate = line.strip().lstrip("#").strip()
+        if candidate and set(candidate) - {"-", "="}:
+            return candidate[:200]
+    return f"手动导入 {utc_now()[:10]}"
+
+
+def _manual_feed(conn, group) -> int:
+    url = f"manual://group/{group['id']}"
+    row = conn.execute("SELECT id FROM feed WHERE url = ?", (url,)).fetchone()
+    if row is not None:
+        return int(row["id"])
+    cursor = conn.execute(
+        "INSERT INTO feed(url, name, enabled, interval_minutes, group_id) "
+        "VALUES(?, ?, 0, 60, ?)",
+        (url, f"手动导入 · {group['name']}", group["id"]),
+    )
+    return int(cursor.lastrowid)
+
+
+def preview_manual_post(
+    settings: dict, title: str | None, text: str, group_id: int
+) -> dict:
+    """只调用 AI 切题，不写库，供用户确认后再入库。"""
+    text = _manual_text(text)
+    with closing(connect()) as conn:
+        group = _manual_group(conn, group_id)
+        module_paths = groups.subtree_paths(conn, group_id)
+    client = _manual_client(settings)
+    if not client.configured:
+        raise ValueError("未配置 AI，无法切题")
+    post = {
+        "title": _manual_title(title, text),
+        "author": "手动导入",
+        "clean_md": text,
+    }
+    return {
+        "mentions": extract_mentions(
+            client, post, module_paths, group["path"]
+        )
+    }
+
+
+def import_manual_post(
+    settings: dict,
+    title: str | None,
+    text: str,
+    group_id: int,
+    mentions: list[dict],
+) -> dict:
+    """把预览确认后的题目写成一层面经，计入出现次数。"""
+    text = _manual_text(text)
+    items = normalize_mentions({"mentions": mentions or []})
+    if not items:
+        raise ValueError("没有可导入的题目")
+    if not _run_lock.acquire(blocking=False):
+        raise ValueError("采集或导入任务正在运行，请稍后重试")
+
+    try:
+        with closing(connect()) as conn:
+            group = _manual_group(conn, group_id)
+            feed_id = _manual_feed(conn, group)
+            cursor = conn.execute(
+                "INSERT INTO post"
+                "(guid, feed_id, title, author, url, raw_html, clean_md, fetched_at, ai_status) "
+                "VALUES(?, ?, ?, '手动导入', NULL, ?, ?, ?, 'done')",
+                (
+                    f"manual-{uuid.uuid4().hex}",
+                    feed_id,
+                    _manual_title(title, text),
+                    text,
+                    text,
+                    utc_now(),
+                ),
+            )
+            post_id = int(cursor.lastrowid)
+
+            client = _manual_client(settings)
+            merger = Merger(conn, client, settings)
+            report = FetchReport(processed_posts=1)
+            if merger.vector_ready:
+                report.embeddings = merger.backfill()
+                if merger.vector_error:
+                    report.errors.append(f"向量检索不可用: {merger.vector_error}")
+            _store_mentions(conn, merger, post_id, group, group_id, items, report)
+            conn.commit()
+    finally:
+        _run_lock.release()
+
+    result = report.to_dict()
+    result["post_id"] = post_id
+    return result
 
 
 def _auto_push(

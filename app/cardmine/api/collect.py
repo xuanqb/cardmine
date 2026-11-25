@@ -66,7 +66,9 @@ def _check_group(conn, group_id: int | None) -> None:
 @router.get("/feeds")
 def list_feeds() -> dict:
     with closing(connect()) as conn:
-        rows = conn.execute(f"{FEED_SELECT} ORDER BY f.id").fetchall()
+        rows = conn.execute(
+            f"{FEED_SELECT} WHERE f.url NOT LIKE 'manual://%' ORDER BY f.id"
+        ).fetchall()
     return {
         "items": [
             {**_feed_row(row), "posts": row["posts"], "mentions": row["mentions"]}

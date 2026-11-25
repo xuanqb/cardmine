@@ -3,13 +3,27 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from .. import config
+from ..ai import AIError
+from ..collect.service import import_manual_post, preview_manual_post
 from ..db import utc_now
 from ..importer import run_import
 from ..importer.markdown import run_markdown_import
+from .settings import load_settings
 
 router = APIRouter(prefix="/api/import", tags=["import"])
+
+
+class TextPreviewIn(BaseModel):
+    title: str | None = None
+    text: str
+    group_id: int
+
+
+class TextCommitIn(TextPreviewIn):
+    mentions: list[dict]
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -118,6 +132,37 @@ async def upload_markdown(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return report.to_dict()
+
+
+@router.post("/text/preview")
+def preview_text(payload: TextPreviewIn) -> dict:
+    try:
+        return preview_manual_post(
+            load_settings(),
+            payload.title,
+            payload.text,
+            payload.group_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AIError as exc:
+        raise HTTPException(status_code=502, detail=f"AI 切题失败：{exc}") from exc
+
+
+@router.post("/text")
+def commit_text(payload: TextCommitIn) -> dict:
+    try:
+        return import_manual_post(
+            load_settings(),
+            payload.title,
+            payload.text,
+            payload.group_id,
+            payload.mentions,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AIError as exc:
+        raise HTTPException(status_code=502, detail=f"导入失败：{exc}") from exc
 
 
 @router.get("/{job_id}")
