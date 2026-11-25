@@ -11,7 +11,48 @@ sys.path.insert(0, str(ROOT / "app"))
 
 from cardmine import config, db  # noqa: E402
 from cardmine.anki import service, targets  # noqa: E402
+from cardmine.anki.client import AnkiClient  # noqa: E402
 from cardmine.importer.textfmt import normalize_front  # noqa: E402
+
+
+class ModelClient(AnkiClient):
+    """在内存中模拟 Anki 模型与样式的客户端。"""
+
+    def __init__(self, models=None):
+        super().__init__("http://fake")
+        self.models = models or {}
+        self.calls = []
+
+    def call(self, action, timeout=60, **params):
+        self.calls.append((action, params))
+        if action == "version":
+            return 6
+        if action == "modelNames":
+            return sorted(self.models)
+        if action == "modelStyling":
+            return {"css": self.models[params["modelName"]]["css"]}
+        if action == "modelTemplates":
+            return self.models[params["modelName"]]["templates"]
+        if action == "modelFieldNames":
+            return ["Front", "Back"]
+        if action == "createModel":
+            self.models[params["modelName"]] = {
+                "css": params["css"],
+                "templates": {
+                    item["Name"]: {"Front": item["Front"], "Back": item["Back"]}
+                    for item in params.get("cardTemplates", [])
+                },
+            }
+            return None
+        if action == "updateModelStyling":
+            self.models[params["model"]["name"]]["css"] = params["model"]["css"]
+            return None
+        if action == "updateModelTemplates":
+            self.models[params["model"]["name"]]["templates"] = params["model"][
+                "templates"
+            ]
+            return None
+        raise AssertionError(f"未预期的动作：{action}")
 
 
 class FakeClient:
@@ -24,8 +65,8 @@ class FakeClient:
         self.calls = []
         self.next_note = 900
 
-    def ensure_model(self, name):
-        self.calls.append(("ensure_model", {"name": name}))
+    def ensure_model(self, name, timeout=60, source=None):
+        self.calls.append(("ensure_model", {"name": name, "source": source}))
 
     def sync_web(self):
         self.calls.append(("sync", {}))
@@ -454,6 +495,82 @@ class MediaConflictTest(SyncTestCase):
         self.assertEqual(result["conflicts"], 0)
         self.assertEqual(result["updated"], 1)
         self.assertEqual(client.notes[10]["fields"]["Back"]["value"], "new")
+
+
+class ModelStyleTest(SyncTestCase):
+    CSS = ".card { font-family: 'Custom', sans-serif; }"
+    TEMPLATES = {
+        "Card 1": {
+            "Front": "{{Front}}",
+            "Back": "{{FrontSide}}\n<hr id=answer>\n{{Back}}",
+        },
+        "Reverse": {
+            "Front": "{{Back}}",
+            "Back": "{{FrontSide}}\n<hr id=answer>\n{{Front}}",
+        },
+    }
+
+    def setUp(self):
+        super().setUp()
+        with closing(db.connect()) as conn, conn:
+            self.friend_id = conn.execute(
+                "INSERT INTO anki_target(name, base_url, enabled, sort, created_at) "
+                "VALUES('朋友', 'http://friend:8765/api', 1, 1, "
+                "'2026-01-01T00:00:00+00:00')"
+            ).lastrowid
+
+    def _clients(self, target_models):
+        self.source = ModelClient(
+            {"Basic": {"css": self.CSS, "templates": self.TEMPLATES}}
+        )
+        self.target = ModelClient(target_models)
+        clients = {self.target_id: self.source, self.friend_id: self.target}
+        return mock.patch.object(
+            targets,
+            "client_for",
+            side_effect=lambda row, guard=True: clients[int(row["id"])],
+        )
+
+    def test_ensure_model_copies_style_when_creating(self):
+        source = ModelClient(
+            {"Basic": {"css": self.CSS, "templates": self.TEMPLATES}}
+        )
+        target = ModelClient({})
+        target.ensure_model("Basic", source=source)
+        self.assertEqual(target.models["Basic"]["css"], self.CSS)
+        self.assertEqual(target.models["Basic"]["templates"], self.TEMPLATES)
+        created = [params for action, params in target.calls if action == "createModel"]
+        self.assertEqual(len(created[0]["cardTemplates"]), 2)
+
+    def test_ensure_model_without_source_uses_default_css(self):
+        target = ModelClient({})
+        target.ensure_model("Basic")
+        self.assertIn(".card", target.models["Basic"]["css"])
+        self.assertEqual(target.models["Basic"]["templates"], {})
+
+    def test_sync_style_updates_existing_model(self):
+        with self._clients(
+            {"Basic": {"css": ".card { color: black; }", "templates": {}}}
+        ):
+            result = service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(result["source_name"], "主账号")
+        self.assertEqual(result["templates"], 2)
+        self.assertEqual(self.target.models["Basic"]["css"], self.CSS)
+        self.assertEqual(self.target.models["Basic"]["templates"], self.TEMPLATES)
+
+    def test_sync_style_creates_missing_model(self):
+        with self._clients({}):
+            result = service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(result["css"], True)
+        self.assertEqual(self.target.models["Basic"]["css"], self.CSS)
+        self.assertEqual(self.target.models["Basic"]["templates"], self.TEMPLATES)
+
+    def test_sync_style_rejects_same_source(self):
+        with self._clients({}):
+            with self.assertRaises(ValueError):
+                service.sync_model_style(
+                    self.friend_id, "Basic", source_target_id=self.friend_id
+                )
 
 
 class _MigrationBase(unittest.TestCase):

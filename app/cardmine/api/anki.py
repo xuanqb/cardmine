@@ -16,6 +16,7 @@ from ..anki.service import (
     resolve_conflict,
     summary,
     sync_all_targets,
+    sync_model_style,
     takeover_target,
     undo_conflict,
 )
@@ -323,6 +324,26 @@ def set_target_groups(target_id: int, payload: TargetGroupsIn) -> dict:
             raise HTTPException(status_code=404, detail="同步目标不存在")
         groups = targets.set_target_groups(conn, target_id, payload.group_ids)
         return {"target_id": target_id, "group_ids": groups}
+
+
+class ModelStyleIn(BaseModel):
+    source_target_id: int | None = None
+
+
+@router.post("/targets/{target_id}/style")
+def copy_model_style(target_id: int, payload: ModelStyleIn | None = None) -> dict:
+    settings = load_settings()
+    try:
+        return sync_model_style(
+            target_id,
+            settings["anki_model"],
+            payload.source_target_id if payload else None,
+            guard=bool(settings.get("anki_conflict_guard", True)),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, AnkiError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/targets/{target_id}/status")

@@ -552,6 +552,78 @@ def _clients_for_targets(guard: bool, exclude: int | None = None) -> dict[int, A
     }
 
 
+def _first_model_client(
+    clients: dict[int, AnkiClient], model_name: str
+) -> AnkiClient | None:
+    """按目标创建顺序找第一个已存在该模型的客户端，用于复制 note 样式。"""
+    for target_id in sorted(clients):
+        try:
+            if model_name in (clients[target_id].call("modelNames", timeout=15) or []):
+                return clients[target_id]
+        except AnkiError:
+            continue
+    return None
+
+
+def sync_model_style(
+    target_id: int,
+    model_name: str,
+    source_target_id: int | None = None,
+    guard: bool = True,
+) -> dict:
+    """把某个目标的 note 类型 CSS 与卡片模板复制到目标。"""
+    with closing(connect()) as conn:
+        target = targets.get_target(conn, target_id)
+        if target is None:
+            raise LookupError("同步目标不存在")
+        rows = targets.list_targets(conn)
+
+    candidates = [row for row in rows if int(row["id"]) != target_id]
+    if source_target_id is not None:
+        candidates = [
+            row for row in candidates if int(row["id"]) == source_target_id
+        ]
+        if not candidates:
+            raise ValueError("源目标不存在或与目标相同")
+
+    source = None
+    source_row = None
+    for row in candidates:
+        candidate = targets.client_for(row, guard)
+        try:
+            if model_name in (candidate.call("modelNames", timeout=15) or []):
+                source, source_row = candidate, row
+                break
+        except AnkiError:
+            continue
+    if source is None or source_row is None:
+        raise AnkiError(f"没有其他目标包含模型 {model_name}，无法复制样式")
+
+    styling = source.call("modelStyling", modelName=model_name) or {}
+    templates = source.call("modelTemplates", modelName=model_name) or {}
+    if not styling.get("css") and not templates:
+        raise AnkiError(f"源目标模型 {model_name} 没有可复制的样式")
+
+    client = targets.client_for(target, guard)
+    client.ensure_model(model_name, source=source)
+    client.call(
+        "updateModelStyling",
+        model={"name": model_name, "css": styling.get("css") or ""},
+    )
+    if templates:
+        client.call(
+            "updateModelTemplates",
+            model={"name": model_name, "templates": templates},
+        )
+    return {
+        "target_id": target_id,
+        "source_target_id": int(source_row["id"]),
+        "source_name": source_row["name"],
+        "css": bool(styling.get("css")),
+        "templates": len(templates),
+    }
+
+
 def _propagate_delete(
     conn,
     kp_id: int,
@@ -1229,11 +1301,13 @@ def sync_target(
         scopes = targets.scope_paths(conn, target_id)
 
     client = targets.client_for(target, guard)
+    clients = _clients_for_targets(guard, exclude=target_id)
     _notify(progress, "校验目标", 0, 1)
-    client.ensure_model(model_name)
+    client.ensure_model(
+        model_name, source=_first_model_client(clients, model_name)
+    )
     _notify(progress, "校验目标", 1, 1)
 
-    clients = _clients_for_targets(guard, exclude=target_id)
     result = {
         "target_id": target_id,
         "target": target["name"],

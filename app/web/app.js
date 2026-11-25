@@ -308,6 +308,30 @@ function renderTargets(items) {
       smallButton("同步", () => startJob("sync", renderReport, item.id)),
       smallButton("接管", () => startJob("takeover", renderReport, item.id)),
       smallButton("体检", () => startJob("audit", renderAudit, item.id)),
+      smallButton("同步样式", async () => {
+        if (
+          !window.confirm(
+            `从其他目标复制 note 类型样式（CSS 与卡片模板），覆盖「${item.name}」的同名模型。继续？`,
+          )
+        ) {
+          return;
+        }
+        try {
+          const result = await fetchJSON(
+            `/api/anki/targets/${item.id}/style`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: "{}",
+            },
+          );
+          showToast(
+            `已从「${result.source_name}」复制样式：${result.templates} 个模板`,
+          );
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      }),
       smallButton("编辑", () => openTargetForm(item)),
       smallButton(
         "删除",

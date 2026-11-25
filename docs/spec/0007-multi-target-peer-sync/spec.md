@@ -60,7 +60,8 @@ CREATE UNIQUE INDEX ux_sync_conflict_pending ON sync_conflict(kp_id) WHERE statu
 
 ## 3. 客户端 `app/cardmine/anki/client.py`
 
-- `ensure_model(model_name)`：`modelNames` 不存在时 `createModel`（Front/Back，css 空），再校验字段；供空账号首次同步。
+- `ensure_model(model_name, source=None)`：`modelNames` 不存在时 `createModel`（Front/Back）；提供 `source` 时复制其 `modelStyling`/`modelTemplates`（CSS 与卡片模板），否则用内置 css。再校验字段；供空账号首次同步。
+- `sync_model_style(target_id, model_name, source_target_id=None)`：把源目标的模型样式复制到目标，支持修复已存在但样式不同的模型。
 - `sync_web(guard)`：调用 `sync`；`guard=True` 且错误含 "full sync" 时抛 `AnkiError("需要 full sync，已按保护设置中止")`。
 - 其余保持不变。
 
@@ -139,6 +140,7 @@ CREATE UNIQUE INDEX ux_sync_conflict_pending ON sync_conflict(kp_id) WHERE statu
 ### 5.2 其他
 
 - `api/settings.py`：删除 `anki_url` 默认值与入参；保留模型/开关/保护。
+- `api/anki.py`：新增 `POST /targets/{id}/style`，从其他目标复制 note 类型样式。
 - `api/cards.py`：详情增加 `anki_links: [{target_id,target_name,note_id,detached,flag}]`；`conflicts` 读 `sync_conflict`；旗帜清除按 `target_id`；归档 dry-run/统计按 `anki_sync`；合并删除 note 按目标。
 - `review.py`：合并时迁移/删除各目标 `anki_sync` 行；不再读写 `kp.anki_note_id`；`unclaimed_notes` 含 `target_id/target_name`；保留 `anki_note_id` 作为首个 note 的兼容字段。
 - `api/media.py`：引用扫描改 `sync_conflict(system_front/system_back/target_front/target_back)`。

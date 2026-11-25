@@ -9,6 +9,8 @@ READ_ACTIONS = {
     "version",
     "modelNames",
     "modelFieldNames",
+    "modelStyling",
+    "modelTemplates",
     "deckNames",
     "findNotes",
     "findCards",
@@ -34,6 +36,27 @@ class AnkiError(Exception):
 
 class AnkiTransientError(AnkiError):
     """连接失败、超时或 5xx，读请求可以重试。"""
+
+
+def _source_style(
+    source: "AnkiClient | None", model_name: str, timeout: int
+) -> dict | None:
+    """读取源目标的模型 CSS 与卡片模板；读取失败时返回 None。"""
+    if source is None:
+        return None
+    try:
+        styling = source.call("modelStyling", modelName=model_name, timeout=timeout)
+        templates = source.call("modelTemplates", modelName=model_name, timeout=timeout)
+    except AnkiError:
+        return None
+    card_templates = [
+        {"Name": name, "Front": body.get("Front", ""), "Back": body.get("Back", "")}
+        for name, body in (templates or {}).items()
+    ]
+    css = (styling or {}).get("css") or ""
+    if not css and not card_templates:
+        return None
+    return {"css": css or MODEL_CSS, "templates": card_templates}
 
 
 class AnkiClient:
@@ -81,20 +104,31 @@ class AnkiClient:
             raise AnkiError(str(data["error"]))
         return data.get("result")
 
-    def ensure_model(self, model_name: str = "Basic", timeout: int = 60) -> dict:
-        """目标为空时创建同名字段模型；已有模型时只校验字段。"""
+    def ensure_model(
+        self,
+        model_name: str = "Basic",
+        timeout: int = 60,
+        source: "AnkiClient | None" = None,
+    ) -> dict:
+        """目标为空时创建同名字段模型；已有模型时只校验字段。
+
+        新建模型时如果提供 source，会复制它的 CSS 与卡片模板，
+        让不同账号下的 note 外观保持一致。
+        """
         version = self.call("version", timeout=timeout)
         models = self.call("modelNames", timeout=timeout)
         if model_name not in models:
+            style = _source_style(source, model_name, timeout)
+            params = {
+                "modelName": model_name,
+                "inOrderFields": ["Front", "Back"],
+                "css": style["css"] if style else MODEL_CSS,
+                "isCloze": False,
+            }
+            if style and style["templates"]:
+                params["cardTemplates"] = style["templates"]
             try:
-                self.call(
-                    "createModel",
-                    timeout=timeout,
-                    modelName=model_name,
-                    inOrderFields=["Front", "Back"],
-                    css=MODEL_CSS,
-                    isCloze=False,
-                )
+                self.call("createModel", timeout=timeout, **params)
             except AnkiError:
                 # 并发创建或容器不支持时，以再次读取的结果为准
                 models = self.call("modelNames", timeout=timeout)
