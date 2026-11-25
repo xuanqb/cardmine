@@ -6,8 +6,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from .. import config
-from ..ai import AIError
-from ..collect.service import import_manual_post, preview_manual_post
+from ..collect.service import prepare_manual_post, run_manual_post
 from ..db import utc_now
 from ..importer import run_import
 from ..importer.markdown import run_markdown_import
@@ -16,14 +15,11 @@ from .settings import load_settings
 router = APIRouter(prefix="/api/import", tags=["import"])
 
 
-class TextPreviewIn(BaseModel):
+class TextImportIn(BaseModel):
     title: str | None = None
     text: str
     group_id: int
 
-
-class TextCommitIn(TextPreviewIn):
-    mentions: list[dict]
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -34,6 +30,11 @@ def _set(job_id: str, **fields) -> None:
         job = _jobs.get(job_id)
         if job is not None:
             job.update(fields)
+
+
+def _has_active_job() -> bool:
+    with _lock:
+        return any(job["status"] in ("queued", "running") for job in _jobs.values())
 
 
 def _run_job(job_id: str, path: Path) -> None:
@@ -134,35 +135,63 @@ async def upload_markdown(
     return report.to_dict()
 
 
-@router.post("/text/preview")
-def preview_text(payload: TextPreviewIn) -> dict:
-    try:
-        return preview_manual_post(
-            load_settings(),
-            payload.title,
-            payload.text,
-            payload.group_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except AIError as exc:
-        raise HTTPException(status_code=502, detail=f"AI 切题失败：{exc}") from exc
-
-
 @router.post("/text")
-def commit_text(payload: TextCommitIn) -> dict:
+def start_text_import(payload: TextImportIn) -> dict:
+    """粘贴整篇面经后直接入队，后台完成切题与归并。"""
+    settings = load_settings()
     try:
-        return import_manual_post(
-            load_settings(),
-            payload.title,
-            payload.text,
-            payload.group_id,
-            payload.mentions,
-        )
+        prepare_manual_post(settings, payload.title, payload.text, payload.group_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except AIError as exc:
-        raise HTTPException(status_code=502, detail=f"导入失败：{exc}") from exc
+    if _has_active_job():
+        raise HTTPException(status_code=409, detail="已有导入任务在运行，请等待完成")
+
+    job_id = uuid.uuid4().hex[:12]
+    with _lock:
+        _jobs[job_id] = {
+            "job_id": job_id,
+            "kind": "text",
+            "status": "queued",
+            "phase": "排队中",
+            "processed": 0,
+            "total": 0,
+            "report": None,
+            "error": None,
+            "created_at": utc_now(),
+            "started_at": None,
+            "finished_at": None,
+        }
+    threading.Thread(
+        target=_run_text_job,
+        args=(job_id, payload.title, payload.text, payload.group_id),
+        daemon=True,
+    ).start()
+    return {"job_id": job_id}
+
+
+def _run_text_job(
+    job_id: str, title: str | None, text: str, group_id: int
+) -> None:
+    def progress(phase: str, done: int, total: int) -> None:
+        _set(job_id, phase=phase, processed=done, total=total)
+
+    _set(job_id, status="running", started_at=utc_now())
+    try:
+        report = run_manual_post(load_settings(), title, text, group_id, progress)
+        if report["ai_failed"]:
+            error = report["errors"][0] if report["errors"] else "AI 切题失败"
+            raise RuntimeError(error)
+        _set(
+            job_id,
+            status="done",
+            phase="完成",
+            processed=1,
+            total=1,
+            report=report,
+            finished_at=utc_now(),
+        )
+    except Exception as exc:  # noqa: BLE001 - 任务失败统一回传前端
+        _set(job_id, status="failed", error=str(exc), finished_at=utc_now())
 
 
 @router.get("/{job_id}")

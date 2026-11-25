@@ -548,79 +548,75 @@ button:disabled {
   align-items: end;
 }
 
-.preview-box {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-}
-
-.preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.preview-head h3 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.preview-head .check {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-muted);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.preview-count {
-  margin-left: 8px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-
-.preview-list {
+.result-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 6px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
   max-height: 420px;
   overflow: auto;
 }
 
-.preview-item {
+.result-item {
   display: flex;
-  align-items: flex-start;
+  align-items: baseline;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-muted);
-  cursor: pointer;
+  font-size: 13px;
 }
 
-.preview-item input {
-  margin-top: 4px;
+.result-tag {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
 }
 
-.preview-item-body {
+.result-tag.created {
+  border-color: rgba(26, 127, 55, 0.35);
+  background: rgba(26, 127, 55, 0.09);
+  color: var(--brand-strong);
+}
+
+.result-tag.attached {
+  border-color: rgba(9, 105, 218, 0.3);
+  background: rgba(9, 105, 218, 0.08);
+  color: #0969da;
+}
+
+.result-tag.candidate {
+  border-color: rgba(154, 103, 0, 0.3);
+  background: rgba(154, 103, 0, 0.08);
+  color: #9a6700;
+}
+
+.result-tag.failed {
+  border-color: rgba(207, 34, 46, 0.3);
+  background: rgba(207, 34, 46, 0.08);
+  color: var(--danger);
+}
+
+.result-question {
   min-width: 0;
-}
-
-.preview-question {
-  margin: 0;
   color: var(--text);
-  font-size: 14px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-.preview-meta {
-  margin: 4px 0 0;
+.result-note {
+  flex: none;
   color: var(--text-muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 700px) {

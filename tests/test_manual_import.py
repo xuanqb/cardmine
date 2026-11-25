@@ -9,10 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
 
 from cardmine import config, db  # noqa: E402
-from cardmine.collect.service import (  # noqa: E402
-    import_manual_post,
-    preview_manual_post,
-)
+from cardmine.ai import AIError  # noqa: E402
+from cardmine.collect.service import run_manual_post  # noqa: E402
 
 SETTINGS = {
     "ai_base_url": "",
@@ -32,6 +30,17 @@ AI_SETTINGS = {
     "ai_api_key": "test",
     "ai_chat_model": "test",
 }
+
+
+def mention(question, module="Backend/MySQL"):
+    return {
+        "question": question,
+        "topic": "tech",
+        "subtype": None,
+        "section": "一面",
+        "context": "",
+        "module": module,
+    }
 
 
 class ManualImportTest(unittest.TestCase):
@@ -65,36 +74,26 @@ class ManualImportTest(unittest.TestCase):
             config.BACKUP_DIR,
         ) = self._saved
 
-    def mention(self, question, module=None):
-        return {
-            "question": question,
-            "topic": "tech",
-            "subtype": None,
-            "section": "一面",
-            "context": "",
-            "module": module or "Backend/MySQL",
-        }
+    def run_import(self, title, text, mentions, settings=None):
+        with mock.patch(
+            "cardmine.collect.service.extract_mentions", return_value=mentions
+        ):
+            return run_manual_post(
+                settings or AI_SETTINGS, title, text, self.group_id
+            )
 
     def test_import_counts_mentions_and_attaches(self):
-        first = import_manual_post(
-            SETTINGS,
-            "字节一面",
-            "整篇面经文字",
-            self.group_id,
-            [self.mention("MySQL 索引为什么用 B+ 树")],
-        )
+        question = "MySQL 索引为什么用 B+ 树"
+        first = self.run_import("字节一面", "整篇面经文字", [mention(question)])
         self.assertEqual(first["mentions"], 1)
         self.assertEqual(first["created"], 1)
+        self.assertEqual(first["items"][0]["action"], "created")
 
-        second = import_manual_post(
-            SETTINGS,
-            "字节二面",
-            "另一整篇面经文字",
-            self.group_id,
-            [self.mention("MySQL 索引为什么用 B+ 树")],
-        )
+        second = self.run_import("字节二面", "另一整篇面经文字", [mention(question)])
         self.assertEqual(second["mentions"], 1)
         self.assertEqual(second["attached"], 1)
+        self.assertEqual(second["items"][0]["action"], "attached")
+        self.assertEqual(second["items"][0]["kp_front"], question)
 
         with closing(db.connect()) as conn:
             cards = conn.execute(
@@ -119,31 +118,9 @@ class ManualImportTest(unittest.TestCase):
             self.assertEqual(feed["url"], f"manual://group/{self.group_id}")
             self.assertEqual(feed["enabled"], 0)
 
-    def test_duplicate_question_in_one_import_is_deduped(self):
-        result = import_manual_post(
-            SETTINGS,
-            None,
-            "text",
-            self.group_id,
-            [self.mention("Redis 持久化"), self.mention("Redis 持久化")],
-        )
-        self.assertEqual(result["mentions"], 1)
-
     def test_title_defaults_to_first_line(self):
-        import_manual_post(
-            SETTINGS,
-            None,
-            "\n# 2024 秋招 字节一面\n\n面试正文",
-            self.group_id,
-            [self.mention("第一个问题")],
-        )
-        import_manual_post(
-            SETTINGS,
-            "手动标题",
-            "正文",
-            self.group_id,
-            [self.mention("第二个问题")],
-        )
+        self.run_import(None, "\n# 2024 秋招 字节一面\n\n面试正文", [mention("第一个问题")])
+        self.run_import("手动标题", "正文", [mention("第二个问题")])
         with closing(db.connect()) as conn:
             titles = [
                 row["title"]
@@ -151,43 +128,48 @@ class ManualImportTest(unittest.TestCase):
             ]
         self.assertEqual(titles, ["2024 秋招 字节一面", "手动标题"])
 
-    @mock.patch(
-        "cardmine.collect.service.extract_mentions",
-        return_value=[{"question": "q", "topic": "tech"}],
-    )
-    def test_preview_uses_first_line_as_title(self, extract):
-        preview_manual_post(AI_SETTINGS, None, "第一行标题\n正文", self.group_id)
-        self.assertEqual(extract.call_args.args[1]["title"], "第一行标题")
+    def test_requires_group_text_and_ai(self):
+        with self.assertRaises(ValueError):
+            run_manual_post(AI_SETTINGS, None, "text", 999)
+        with self.assertRaises(ValueError):
+            run_manual_post(AI_SETTINGS, None, "   ", self.group_id)
+        with self.assertRaises(ValueError):
+            run_manual_post(SETTINGS, None, "text", self.group_id)
 
-    def test_requires_group_and_text(self):
+    def test_rejects_overlong_text(self):
         with self.assertRaises(ValueError):
-            import_manual_post(SETTINGS, None, "text", 999, [self.mention("q")])
-        with self.assertRaises(ValueError):
-            import_manual_post(SETTINGS, None, "   ", self.group_id, [self.mention("q")])
-        with self.assertRaises(ValueError):
-            import_manual_post(SETTINGS, None, "text", self.group_id, [])
+            run_manual_post(AI_SETTINGS, None, "x" * 16001, self.group_id)
 
-    @mock.patch(
-        "cardmine.collect.service.extract_mentions",
-        return_value=[{"question": "q", "topic": "tech"}],
-    )
-    def test_preview_does_not_write(self, extract):
-        result = preview_manual_post(AI_SETTINGS, "标题", "正文", self.group_id)
-        self.assertEqual(result["mentions"], [{"question": "q", "topic": "tech"}])
-        self.assertEqual(extract.call_args.args[3], "Backend")
+    def test_ai_failure_marks_post_failed(self):
+        with mock.patch(
+            "cardmine.collect.service.extract_mentions",
+            side_effect=AIError("boom"),
+        ):
+            result = run_manual_post(AI_SETTINGS, None, "text", self.group_id)
+        self.assertEqual(result["ai_failed"], 1)
+        self.assertEqual(result["mentions"], 0)
+        self.assertEqual(result["items"], [])
+        self.assertIn("boom", result["errors"][0])
         with closing(db.connect()) as conn:
-            self.assertEqual(
-                conn.execute("SELECT COUNT(*) AS value FROM post").fetchone()["value"],
-                0,
+            status = conn.execute("SELECT ai_status FROM post").fetchone()["ai_status"]
+        self.assertEqual(status, "failed")
+
+    def test_progress_reports_phases(self):
+        phases = []
+        with mock.patch(
+            "cardmine.collect.service.extract_mentions",
+            return_value=[mention("第一个问题")],
+        ):
+            run_manual_post(
+                AI_SETTINGS,
+                None,
+                "text",
+                self.group_id,
+                lambda phase, done, total: phases.append(phase),
             )
-
-    def test_preview_requires_ai(self):
-        with self.assertRaises(ValueError):
-            preview_manual_post(SETTINGS, None, "正文", self.group_id)
-
-    def test_preview_rejects_overlong_text(self):
-        with self.assertRaises(ValueError):
-            preview_manual_post(AI_SETTINGS, None, "x" * 16001, self.group_id)
+        self.assertIn("补全向量", phases)
+        self.assertIn("AI 切题", phases)
+        self.assertIn("归并题目", phases)
 
 
 if __name__ == "__main__":

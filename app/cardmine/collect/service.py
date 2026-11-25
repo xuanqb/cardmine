@@ -12,7 +12,7 @@ from ..ai import AIClient, AIError
 from ..anki import push_targets
 from ..db import connect, utc_now
 from .clean import clean_post
-from .extract import MAX_INPUT_CHARS, extract_mentions, normalize_mentions
+from .extract import MAX_INPUT_CHARS, extract_mentions
 from .merge import Merger, ensure_module
 from .rss import FeedError, fetch_feed
 
@@ -103,14 +103,15 @@ def _process_post(
     client: AIClient,
     post_id: int,
     report: FetchReport,
-) -> None:
+    progress: Progress | None = None,
+) -> list[dict]:
     post = conn.execute(
         "SELECT p.*, f.group_id AS feed_group_id "
         "FROM post p JOIN feed f ON f.id = p.feed_id WHERE p.id = ?",
         (post_id,),
     ).fetchone()
     if post is None:
-        return
+        return []
 
     group_id = post["feed_group_id"]
     group = groups.get_group(conn, group_id)
@@ -120,11 +121,12 @@ def _process_post(
         conn.commit()
         report.ai_failed += 1
         report.errors.append(f"面经 {post_id}: 未配置 AI，无法切题")
-        return
+        return []
 
     module_paths = groups.subtree_paths(conn, group_id) if group is not None else [
         row["path"] for row in conn.execute("SELECT path FROM module ORDER BY path")
     ]
+    _notify(progress, "AI 切题", 0, 1)
     try:
         mentions = extract_mentions(
             client,
@@ -137,13 +139,17 @@ def _process_post(
         conn.commit()
         report.ai_failed += 1
         report.errors.append(f"面经 {post_id}: {exc}")
-        return
+        return []
+    _notify(progress, "AI 切题", 1, 1)
 
     conn.execute("DELETE FROM mention WHERE post_id = ?", (post_id,))
     report.processed_posts += 1
-    _store_mentions(conn, merger, post_id, group, group_id, mentions, report)
+    _notify(progress, "归并题目", 0, 1)
+    items = _store_mentions(conn, merger, post_id, group, group_id, mentions, report)
+    _notify(progress, "归并题目", 1, 1)
     conn.execute("UPDATE post SET ai_status='done' WHERE id=?", (post_id,))
     conn.commit()
+    return items
 
 
 def _store_mentions(
@@ -154,7 +160,8 @@ def _store_mentions(
     group_id: int | None,
     mentions: list[dict],
     report: FetchReport,
-) -> None:
+) -> list[dict]:
+    items: list[dict] = []
     for seq, item in enumerate(mentions, start=1):
         module_id = (
             ensure_module(conn, item["module"], "ai", group) if item["module"] else None
@@ -190,6 +197,25 @@ def _store_mentions(
             report.created += 1
         elif action == "candidate":
             report.candidates += 1
+        items.append(
+            {
+                "question": item["question"],
+                "module": item["module"],
+                "action": action,
+                "kp_id": kp_id,
+                "kp_front": _kp_front(conn, kp_id),
+            }
+        )
+    return items
+
+
+def _kp_front(conn, kp_id: int | None) -> str:
+    if kp_id is None:
+        return ""
+    row = conn.execute(
+        "SELECT front_md FROM knowledge_point WHERE id = ?", (kp_id,)
+    ).fetchone()
+    return row["front_md"] if row is not None else ""
 
 
 def _manual_client(settings: dict) -> AIClient:
@@ -243,41 +269,27 @@ def _manual_feed(conn, group) -> int:
     return int(cursor.lastrowid)
 
 
-def preview_manual_post(
-    settings: dict, title: str | None, text: str, group_id: int
-) -> dict:
-    """只调用 AI 切题，不写库，供用户确认后再入库。"""
+def prepare_manual_post(settings: dict, title: str | None, text: str, group_id: int) -> dict:
+    """入库前的同步校验，错误直接返回给调用方，不写库。"""
     text = _manual_text(text)
     with closing(connect()) as conn:
-        group = _manual_group(conn, group_id)
-        module_paths = groups.subtree_paths(conn, group_id)
-    client = _manual_client(settings)
-    if not client.configured:
+        _manual_group(conn, group_id)
+    if not _manual_client(settings).configured:
         raise ValueError("未配置 AI，无法切题")
-    post = {
-        "title": _manual_title(title, text),
-        "author": "手动导入",
-        "clean_md": text,
-    }
-    return {
-        "mentions": extract_mentions(
-            client, post, module_paths, group["path"]
-        )
-    }
+    return {"title": _manual_title(title, text), "text": text}
 
 
-def import_manual_post(
+def run_manual_post(
     settings: dict,
     title: str | None,
     text: str,
     group_id: int,
-    mentions: list[dict],
+    progress: Progress | None = None,
 ) -> dict:
-    """把预览确认后的题目写成一层面经，计入出现次数。"""
-    text = _manual_text(text)
-    items = normalize_mentions({"mentions": mentions or []})
-    if not items:
-        raise ValueError("没有可导入的题目")
+    """把整篇面经当成一个 post 走采集链路：切题、归并、计入出现次数。"""
+    started = time.time()
+    prepared = prepare_manual_post(settings, title, text, group_id)
+    text = prepared["text"]
     if not _run_lock.acquire(blocking=False):
         raise ValueError("采集或导入任务正在运行，请稍后重试")
 
@@ -288,32 +300,40 @@ def import_manual_post(
             cursor = conn.execute(
                 "INSERT INTO post"
                 "(guid, feed_id, title, author, url, raw_html, clean_md, fetched_at, ai_status) "
-                "VALUES(?, ?, ?, '手动导入', NULL, ?, ?, ?, 'done')",
+                "VALUES(?, ?, ?, '手动导入', NULL, ?, ?, ?, 'pending')",
                 (
                     f"manual-{uuid.uuid4().hex}",
                     feed_id,
-                    _manual_title(title, text),
+                    prepared["title"],
                     text,
                     text,
                     utc_now(),
                 ),
             )
             post_id = int(cursor.lastrowid)
+            conn.commit()
 
             client = _manual_client(settings)
             merger = Merger(conn, client, settings)
-            report = FetchReport(processed_posts=1)
+            report = FetchReport()
+
+            _notify(progress, "补全向量", 0, 1)
             if merger.vector_ready:
-                report.embeddings = merger.backfill()
+                report.embeddings += merger.backfill()
                 if merger.vector_error:
                     report.errors.append(f"向量检索不可用: {merger.vector_error}")
-            _store_mentions(conn, merger, post_id, group, group_id, items, report)
+            _notify(progress, "补全向量", 1, 1)
+
+            items = _process_post(conn, merger, client, post_id, report, progress)
             conn.commit()
     finally:
         _run_lock.release()
 
     result = report.to_dict()
     result["post_id"] = post_id
+    result["title"] = prepared["title"]
+    result["items"] = items
+    result["elapsed_ms"] = int((time.time() - started) * 1000)
     return result
 
 

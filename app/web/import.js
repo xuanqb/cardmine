@@ -235,19 +235,23 @@ const textForm = document.getElementById("text-form");
 const textTitle = document.getElementById("text-title");
 const textGroup = document.getElementById("text-group");
 const textBody = document.getElementById("text-body");
-const textPreviewButton = document.getElementById("text-preview");
+const textSubmit = document.getElementById("text-submit");
 const textError = document.getElementById("text-error");
-const textPreviewBox = document.getElementById("text-preview-box");
-const textMentions = document.getElementById("text-mentions");
-const textCount = document.getElementById("text-count");
-const textAll = document.getElementById("text-all");
-const textCommit = document.getElementById("text-commit");
-const textCommitHint = document.getElementById("text-commit-hint");
+const textProgressWrap = document.getElementById("text-progress-wrap");
+const textPhase = document.getElementById("text-phase");
+const textProgressText = document.getElementById("text-progress-text");
+const textProgressFill = document.getElementById("text-progress-fill");
 const textReport = document.getElementById("text-report");
+const textItems = document.getElementById("text-r-items");
 
-const TOPIC_LABELS = { tech: "技术", algo: "算法", nontech: "非技术" };
-let previewItems = [];
-let previewSnapshot = "";
+const ACTION_LABELS = {
+  created: "新建",
+  attached: "关联",
+  candidate: "待确认",
+  failed: "失败",
+};
+
+let textPollTimer = null;
 
 async function fetchJSON(url, options = {}) {
   const response = await fetch(url, options);
@@ -278,7 +282,7 @@ async function loadTextGroups() {
       option.textContent = "请先在卡片页创建分组";
       option.value = "";
       textGroup.append(option);
-      textPreviewButton.disabled = true;
+      textSubmit.disabled = true;
       return;
     }
     for (const root of roots) {
@@ -293,62 +297,99 @@ async function loadTextGroups() {
   }
 }
 
-function selectedTextItems() {
-  return Array.from(
-    textMentions.querySelectorAll('input[type="checkbox"]:checked'),
-  ).map((box) => previewItems[Number(box.dataset.index)]);
-}
-
-function syncCommitHint() {
-  const count = selectedTextItems().length;
-  textCommit.disabled = count === 0;
-  textCommitHint.textContent = count ? `将导入 ${count} 题` : "至少选择一题";
-}
-
-function renderTextPreview(items) {
-  textMentions.replaceChildren();
-  items.forEach((item, index) => {
-    const row = document.createElement("label");
-    row.className = "preview-item";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = true;
-    box.dataset.index = String(index);
-    box.addEventListener("change", () => {
-      textAll.checked = selectedTextItems().length === previewItems.length;
-      syncCommitHint();
-    });
-
-    const body = document.createElement("div");
-    body.className = "preview-item-body";
-    const question = document.createElement("p");
-    question.className = "preview-question";
-    question.textContent = item.question;
-    const meta = document.createElement("p");
-    meta.className = "preview-meta";
-    meta.textContent = [
-      item.module || "未指定模块",
-      item.section || "",
-      TOPIC_LABELS[item.topic] || item.topic,
-      item.subtype === "personal" ? "个人经历" : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    body.append(question, meta);
-    row.append(box, body);
-    textMentions.append(row);
-  });
-  textCount.textContent = `共 ${items.length} 题`;
-  textAll.checked = true;
-  syncCommitHint();
-}
-
-textAll.addEventListener("change", () => {
-  for (const box of textMentions.querySelectorAll('input[type="checkbox"]')) {
-    box.checked = textAll.checked;
+function setTextProgress(phase, processed, total) {
+  textProgressWrap.hidden = false;
+  textPhase.textContent = phase || "处理中";
+  if (total > 0) {
+    const percent = Math.min(100, Math.round((processed / total) * 100));
+    textProgressFill.style.width = `${percent}%`;
+    textProgressText.textContent = `${processed} / ${total}`;
+  } else {
+    textProgressFill.style.width = "0%";
+    textProgressText.textContent = "";
   }
-  syncCommitHint();
-});
+}
+
+function renderTextItems(items) {
+  textItems.replaceChildren();
+  if (!items || !items.length) {
+    textItems.hidden = true;
+    return;
+  }
+  textItems.hidden = false;
+  for (const item of items) {
+    const row = document.createElement("li");
+    row.className = "result-item";
+
+    const tag = document.createElement("span");
+    tag.className = `result-tag ${item.action || "failed"}`;
+    tag.textContent = ACTION_LABELS[item.action] || item.action || "失败";
+
+    const question = document.createElement("span");
+    question.className = "result-question";
+    question.textContent = item.question;
+
+    row.append(tag, question);
+
+    if (item.action === "attached" && item.kp_front && item.kp_front !== item.question) {
+      const note = document.createElement("span");
+      note.className = "result-note";
+      note.textContent = `→ ${item.kp_front}`;
+      row.append(note);
+    }
+    textItems.append(row);
+  }
+}
+
+function renderTextReport(report) {
+  textReport.hidden = false;
+  setText("text-r-mentions", report.mentions);
+  setText("text-r-attached", report.attached);
+  setText("text-r-created", report.created);
+  setText("text-r-candidates", report.candidates);
+  setText("text-r-embeddings", report.embeddings);
+  setText("text-r-elapsed", `${(report.elapsed_ms / 1000).toFixed(1)} s`);
+  renderList("text-r-errors", "错误", report.errors);
+  renderTextItems(report.items);
+}
+
+function stopTextPolling() {
+  if (textPollTimer) {
+    clearInterval(textPollTimer);
+    textPollTimer = null;
+  }
+}
+
+function resetTextSubmit() {
+  textSubmit.disabled = false;
+  textSubmit.textContent = "提交导入";
+  textGroup.disabled = false;
+  textTitle.disabled = false;
+}
+
+async function pollTextJob(jobId) {
+  const job = await fetchJSON(`/api/import/${jobId}`);
+  if (job.status === "queued" || job.status === "running") {
+    setTextProgress(job.phase, job.processed, job.total);
+    return;
+  }
+  stopTextPolling();
+  resetTextSubmit();
+  if (job.status === "done") {
+    textProgressFill.style.width = "100%";
+    textPhase.textContent = "导入完成";
+    renderTextReport(job.report);
+    textBody.value = "";
+    textBody.focus();
+    if (!job.report.mentions) {
+      textError.hidden = false;
+      textError.textContent = "没有识别到面试题，换个文本或补充上下文再试";
+    }
+  } else {
+    textError.hidden = false;
+    textError.textContent = job.error || "导入失败";
+  }
+}
 
 textForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -367,81 +408,38 @@ textForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  textPreviewButton.disabled = true;
-  textPreviewButton.textContent = "解析中…";
-  try {
-    const data = await fetchJSON("/api/import/text/preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: textTitle.value.trim() || null,
-        text,
-        group_id: groupId,
-      }),
-    });
-    previewItems = data.mentions || [];
-    if (!previewItems.length) {
-      textPreviewBox.hidden = true;
-      textError.hidden = false;
-      textError.textContent = "没有识别到面试题，试试补充上下文或换一段文本";
-      return;
-    }
-    renderTextPreview(previewItems);
-    previewSnapshot = `${groupId}\n${text}`;
-    textPreviewBox.hidden = false;
-  } catch (error) {
-    textPreviewBox.hidden = true;
-    textError.hidden = false;
-    textError.textContent = error.message;
-  } finally {
-    textPreviewButton.disabled = false;
-    textPreviewButton.textContent = "解析预览";
-  }
-});
+  stopTextPolling();
+  textSubmit.disabled = true;
+  textSubmit.textContent = "提交中…";
+  textGroup.disabled = true;
+  textTitle.disabled = true;
+  setTextProgress("排队中", 0, 0);
 
-textCommit.addEventListener("click", async () => {
-  const items = selectedTextItems();
-  if (!items.length) return;
-  const groupId = Number(textGroup.value);
-  const text = textBody.value.trim();
-  if (previewSnapshot !== `${groupId}\n${text}`) {
-    textError.hidden = false;
-    textError.textContent = "正文或分组已修改，请重新解析预览";
-    return;
-  }
-  textError.hidden = true;
-  textCommit.disabled = true;
-  textCommit.textContent = "导入中…";
   try {
-    const report = await fetchJSON("/api/import/text", {
+    const data = await fetchJSON("/api/import/text", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: textTitle.value.trim() || null,
         text,
         group_id: groupId,
-        mentions: items,
       }),
     });
-    textReport.hidden = false;
-    setText("text-r-mentions", report.mentions);
-    setText("text-r-attached", report.attached);
-    setText("text-r-created", report.created);
-    setText("text-r-candidates", report.candidates);
-    setText("text-r-embeddings", report.embeddings);
-    renderList("text-r-errors", "错误", report.errors);
-    textPreviewBox.hidden = true;
-    previewItems = [];
-    previewSnapshot = "";
-    textBody.value = "";
-    textBody.focus();
+    textSubmit.textContent = "处理中…";
+    const fail = (error) => {
+      stopTextPolling();
+      resetTextSubmit();
+      textError.hidden = false;
+      textError.textContent = error.message || "导入失败";
+    };
+    textPollTimer = setInterval(() => {
+      pollTextJob(data.job_id).catch(fail);
+    }, 800);
+    pollTextJob(data.job_id).catch(fail);
   } catch (error) {
+    resetTextSubmit();
     textError.hidden = false;
-    textError.textContent = error.message;
-  } finally {
-    textCommit.disabled = false;
-    textCommit.textContent = "确认导入";
-    syncCommitHint();
+    textError.textContent = error.message || "提交失败";
   }
 });
 

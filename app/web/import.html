@@ -135,26 +135,22 @@
                     placeholder="直接粘贴整篇面经文字，题目和回答混排也可以。"></textarea>
         </label>
         <div class="actions">
-          <button type="submit" id="text-preview">解析预览</button>
-          <span class="save-hint">标题留空时取正文第一行</span>
+          <button type="submit" id="text-submit">提交导入</button>
+          <span class="save-hint">提交后后台切题与归并，可离开此页</span>
         </div>
       </form>
 
-      <div class="alert" id="text-error" hidden></div>
-
-      <div class="preview-box" id="text-preview-box" hidden>
-        <div class="preview-head">
-          <h3>切题结果 <span class="preview-count" id="text-count"></span></h3>
-          <label class="check">
-            <input type="checkbox" id="text-all" checked> 全选
-          </label>
+      <div class="progress-wrap" id="text-progress-wrap" hidden>
+        <div class="progress-head">
+          <span id="text-phase">准备中</span>
+          <span id="text-progress-text"></span>
         </div>
-        <div class="preview-list" id="text-mentions"></div>
-        <div class="actions">
-          <button type="button" id="text-commit">确认导入</button>
-          <span class="save-hint" id="text-commit-hint"></span>
+        <div class="progress-bar">
+          <div class="progress-fill" id="text-progress-fill"></div>
         </div>
       </div>
+
+      <div class="alert" id="text-error" hidden></div>
 
       <div class="report" id="text-report" hidden>
         <h3>导入报告</h3>
@@ -164,8 +160,10 @@
           <div><dt>新建卡片</dt><dd id="text-r-created">0</dd></div>
           <div><dt>待确认</dt><dd id="text-r-candidates">0</dd></div>
           <div><dt>向量补全</dt><dd id="text-r-embeddings">0</dd></div>
+          <div><dt>耗时</dt><dd id="text-r-elapsed">—</dd></div>
         </dl>
         <div class="report-detail" id="text-r-errors" hidden></div>
+        <ul class="result-list" id="text-r-items" hidden></ul>
       </div>
     </section>
   </main>
