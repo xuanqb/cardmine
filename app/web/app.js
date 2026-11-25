@@ -311,7 +311,7 @@ function renderTargets(items) {
       smallButton("同步样式", async () => {
         if (
           !window.confirm(
-            `从其他目标复制 note 类型样式（CSS 与卡片模板），覆盖「${item.name}」的同名模型。继续？`,
+            `从其他目标复制 note 类型样式（CSS、卡片模板与模板引用的媒体），覆盖「${item.name}」的同名模型。继续？`,
           )
         ) {
           return;
@@ -325,15 +325,26 @@ function renderTargets(items) {
               body: "{}",
             },
           );
+          const media = result.media_copied
+            ? `，复制 ${result.media_copied} 个媒体`
+            : "";
+          const mediaError = (result.media_errors || []).length
+            ? `；媒体失败：${result.media_errors.join("；")}`
+            : "";
           if (result.sync === "ok") {
             showToast(
-              `已从「${result.source_name}」复制样式并同步到 AnkiWeb`,
+              `已从「${result.source_name}」复制样式${media}并同步到 AnkiWeb${mediaError}`,
+              Boolean(mediaError),
             );
           } else if (result.sync === "failed") {
-            showToast(result.sync_error || "样式已复制，但同步 AnkiWeb 失败", true);
+            showToast(
+              `${result.sync_error || "样式已复制，但同步 AnkiWeb 失败"}${mediaError}`,
+              true,
+            );
           } else {
             showToast(
-              `已从「${result.source_name}」复制样式；自动同步未开启，请在 Anki 中手动同步`,
+              `已从「${result.source_name}」复制样式${media}；自动同步未开启，请在 Anki 中手动同步${mediaError}`,
+              Boolean(mediaError),
             );
           }
         } catch (err) {

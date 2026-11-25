@@ -1,4 +1,5 @@
 import json
+import base64
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,7 @@ class ModelClient(AnkiClient):
     def __init__(self, models=None):
         super().__init__("http://fake")
         self.models = models or {}
+        self.media = {}
         self.calls = []
         self.synced = 0
 
@@ -39,6 +41,13 @@ class ModelClient(AnkiClient):
             return self.models[params["modelName"]]["templates"]
         if action == "modelFieldNames":
             return ["Front", "Back"]
+        if action == "getMediaFilesNames":
+            return sorted(self.media)
+        if action == "retrieveMediaFile":
+            return self.media.get(params["filename"], False)
+        if action == "storeMediaFile":
+            self.media[params["filename"]] = params["data"]
+            return None
         if action == "createModel":
             self.models[params["modelName"]] = {
                 "css": params["css"],
@@ -698,6 +707,35 @@ class ModelStyleTest(SyncTestCase):
         with self._clients({}, source_templates=duplicate):
             with self.assertRaises(AnkiError):
                 service.sync_model_style(self.friend_id, "Basic")
+
+    def test_sync_style_copies_template_media(self):
+        templates = {
+            "Card 1": {
+                "Front": "{{Front}}",
+                "Back": '{{FrontSide}}<script src="markdown-it.min.js"></script>',
+            }
+        }
+        payload = base64.b64encode(b"console.log(1)").decode("ascii")
+        with self._clients({}, source_templates=templates):
+            self.source.media["markdown-it.min.js"] = payload
+            result = service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(result["media_copied"], 1)
+        self.assertEqual(self.target.media["markdown-it.min.js"], payload)
+        self.assertEqual(result["media_errors"], [])
+
+    def test_sync_style_skips_existing_media(self):
+        templates = {
+            "Card 1": {
+                "Front": "{{Front}}",
+                "Back": '{{FrontSide}}<script src="markdown-it.min.js"></script>',
+            }
+        }
+        with self._clients({}, source_templates=templates):
+            self.source.media["markdown-it.min.js"] = "c291cmNl"
+            self.target.media["markdown-it.min.js"] = "dGFyZ2V0"
+            result = service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(result["media_copied"], 0)
+        self.assertEqual(self.target.media["markdown-it.min.js"], "dGFyZ2V0")
 
     def test_sync_style_pushes_to_ankiweb_when_enabled(self):
         with self._clients({}):

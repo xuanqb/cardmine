@@ -459,6 +459,70 @@ def _push_media(
     return uploaded, conflicts, errors
 
 
+_TEMPLATE_MEDIA_RE = re.compile(
+    r"""(?:src|href)\s*=\s*["']([^"']+)["']|url\(\s*["']?([^"')]+)["']?\s*\)""",
+    re.IGNORECASE,
+)
+_TEMPLATE_MEDIA_EXTS = {
+    "js", "css", "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp",
+    "mp3", "ogg", "wav", "m4a", "flac", "mp4", "webm",
+    "woff", "woff2", "ttf", "otf",
+}
+
+
+def _template_media_refs(css: str, templates: dict) -> set[str]:
+    """从模型 CSS 与卡片模板中提取本地媒体文件名。"""
+    texts = [css or ""]
+    for body in templates.values():
+        texts.append(body.get("Front") or "")
+        texts.append(body.get("Back") or "")
+    refs: set[str] = set()
+    for text in texts:
+        for match in _TEMPLATE_MEDIA_RE.finditer(text):
+            name = (match.group(1) or match.group(2) or "").strip()
+            if name.startswith("./"):
+                name = name[2:]
+            if not name or name.startswith(("http:", "https:", "data:", "//", "#")):
+                continue
+            if "/" in name or "\\" in name or name in (".", ".."):
+                continue
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            if ext in _TEMPLATE_MEDIA_EXTS:
+                refs.add(name)
+    return refs
+
+
+def _copy_template_media(
+    source: AnkiClient, client: AnkiClient, refs: set[str]
+) -> tuple[int, list[str]]:
+    """把源目标媒体库中的模板依赖复制到目标，已存在则跳过。"""
+    if not refs:
+        return 0, []
+    try:
+        remote = set(client.call("getMediaFilesNames", pattern="*") or [])
+    except AnkiError as exc:
+        return 0, [f"无法读取目标媒体列表: {exc}"]
+    copied = 0
+    errors: list[str] = []
+    for name in sorted(refs):
+        if name in remote:
+            continue
+        try:
+            data = source.call("retrieveMediaFile", filename=name)
+        except AnkiError as exc:
+            errors.append(f"媒体 {name} 读取失败: {exc}")
+            continue
+        if not data:
+            errors.append(f"媒体 {name} 在源目标中不存在")
+            continue
+        try:
+            client.call("storeMediaFile", filename=name, data=data)
+            copied += 1
+        except AnkiError as exc:
+            errors.append(f"媒体 {name} 写入失败: {exc}")
+    return copied, errors
+
+
 def _front_collision(conn, kp_id: int, group_id: int | None, front_norm: str):
     return conn.execute(
         "SELECT id FROM knowledge_point WHERE front_norm = ? "
@@ -748,6 +812,8 @@ def sync_model_style(
 
     sync_state = "skipped"
     sync_error = None
+    media_refs = _template_media_refs(styling.get("css") or "", templates)
+    media_copied, media_errors = _copy_template_media(source, client, media_refs)
     if sync_enabled:
         try:
             client.sync_web()
@@ -761,6 +827,8 @@ def sync_model_style(
         "source_name": source_row["name"],
         "css": bool(styling.get("css")),
         "templates": len(templates),
+        "media_copied": media_copied,
+        "media_errors": media_errors,
         "sync": sync_state,
         "sync_error": sync_error,
     }
