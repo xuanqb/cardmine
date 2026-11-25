@@ -80,6 +80,14 @@ class ModelClient(AnkiClient):
                 params["templateName"], None
             )
             return None
+        if action == "modelTemplateRename":
+            templates = self.models[params["modelName"]]["templates"]
+            old_name = params["oldTemplateName"]
+            new_name = params["newTemplateName"]
+            if new_name in templates:
+                raise AnkiError(f"template already exists: {new_name}")
+            templates[new_name] = templates.pop(old_name)
+            return None
         raise AssertionError(f"未预期的动作：{action}")
 
 
@@ -651,6 +659,36 @@ class ModelStyleTest(SyncTestCase):
         self.assertEqual(
             self.target.models["Basic"]["templates"], source_templates
         )
+
+    def test_sync_style_renames_sole_template(self):
+        source_templates = {"Card 1": self.TEMPLATES["Card 1"]}
+        target_models = {
+            "Basic": {
+                "css": ".card { color: black; }",
+                "templates": {
+                    "Front": {"Front": "{{Front}}", "Back": "{{FrontSide}}"}
+                },
+            }
+        }
+        with self._clients(target_models, source_templates=source_templates):
+            service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(
+            self.target.models["Basic"]["templates"], source_templates
+        )
+
+    def test_sync_style_renames_templates_when_names_differ(self):
+        target_models = {
+            "Basic": {
+                "css": ".card { color: black; }",
+                "templates": {
+                    "正面": {"Front": "{{Front}}", "Back": "{{FrontSide}}"},
+                    "背面": {"Front": "{{Back}}", "Back": "{{FrontSide}}"},
+                },
+            }
+        }
+        with self._clients(target_models):
+            service.sync_model_style(self.friend_id, "Basic")
+        self.assertEqual(self.target.models["Basic"]["templates"], self.TEMPLATES)
 
     def test_sync_style_rejects_duplicate_source(self):
         duplicate = {

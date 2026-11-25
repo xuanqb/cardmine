@@ -574,7 +574,10 @@ def _repair_target_templates(
     写到所有模板，导致多个模板正面完全相同；此后任何保存都会被 Anki 拒绝。
     这里先把重复模板改成互不相同的临时正面，再删除源中不存在的模板。
     """
-    current = client.call("modelTemplates", modelName=model_name) or {}
+    current = {
+        name: dict(body)
+        for name, body in (client.call("modelTemplates", modelName=model_name) or {}).items()
+    }
     groups: dict[str, list[str]] = {}
     for name, body in current.items():
         groups.setdefault((body.get("Front") or "").strip(), []).append(name)
@@ -598,9 +601,25 @@ def _repair_target_templates(
     source_fronts = {
         (body.get("Front") or "").strip() for body in source_templates.values()
     }
-    for name, body in list(current.items()):
-        if name in source_templates:
-            continue
+    source_names = list(source_templates)
+    missing = [name for name in source_names if name not in current]
+    extras = [name for name in current if name not in source_templates]
+    # 模板名不一致时优先重命名，避免把目标最后一个模板删掉（Anki 不允许）
+    while extras and missing and len(current) <= len(source_names):
+        old_name = extras.pop(0)
+        new_name = missing.pop(0)
+        client.call(
+            "modelTemplateRename",
+            timeout=60,
+            modelName=model_name,
+            oldTemplateName=old_name,
+            newTemplateName=new_name,
+        )
+        current[new_name] = current.pop(old_name)
+    for name in extras:
+        if len(current) <= 1:
+            break
+        body = current[name]
         # 只清理会与现有模板或源模板正面冲突的多余模板，保留用户自定义的独立模板
         if name in duplicated or (body.get("Front") or "").strip() in source_fronts:
             client.call(
@@ -609,6 +628,7 @@ def _repair_target_templates(
                 modelName=model_name,
                 templateName=name,
             )
+            current.pop(name, None)
 
 
 def _apply_model_templates(
@@ -696,11 +716,17 @@ def sync_model_style(
         pending = {
             name: body
             for name, body in templates.items()
-            if (current_templates.get(name) or {}).get("Front") != body.get("Front")
-            or (current_templates.get(name) or {}).get("Back") != body.get("Back")
+            if name in current_templates
+            and (
+                current_templates[name].get("Front") != body.get("Front")
+                or current_templates[name].get("Back") != body.get("Back")
+            )
         }
         if pending:
             _apply_model_templates(client, model_name, pending)
+        for name, body in templates.items():
+            if name not in current_templates:
+                _apply_model_templates(client, model_name, {name: body})
     client.call(
         "updateModelStyling",
         model={"name": model_name, "css": styling.get("css") or ""},
