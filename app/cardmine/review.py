@@ -137,6 +137,12 @@ def list_candidates(
                    lk.status AS left_status, lm.path AS left_module,
                    rk.front_md AS right_front, rk.back_md AS right_back,
                    rk.status AS right_status, rm.path AS right_module,
+                   EXISTS (
+                       SELECT 1 FROM mention ml
+                       JOIN mention mr ON mr.post_id = ml.post_id
+                       WHERE ml.kp_id = c.left_kp_id
+                         AND mr.kp_id = c.right_kp_id
+                   ) AS same_post,
                    me.raw_text AS mention_text, me.section AS mention_section,
                    p.id AS post_id, p.title AS post_title
             FROM dup_candidate c

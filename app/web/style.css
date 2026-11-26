@@ -2554,6 +2554,16 @@ a.mention-title:hover {
   font-size: 12px;
 }
 
+.candidate-tag {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 17px;
+  cursor: default;
+}
+
 .candidate-head .badge {
   margin-left: auto;
 }

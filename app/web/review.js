@@ -195,6 +195,14 @@ function renderCandidate(item) {
 
   head.append(selectLabel, score);
 
+  if (item.same_post) {
+    const tag = document.createElement("span");
+    tag.className = "candidate-tag";
+    tag.textContent = "同篇";
+    tag.title = "两张卡出现在同一篇面经里";
+    head.append(tag);
+  }
+
   if (item.status !== "pending") {
     head.append(badge(item.status === "kept" ? "保持独立" : "已忽略", "archived"));
   }
