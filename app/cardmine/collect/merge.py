@@ -40,6 +40,25 @@ def _cosine(left, right) -> float:
     return dot / norm
 
 
+def drop_vectors(conn, kp_id: int) -> None:
+    """删除单卡向量，正面变更后由下次 backfill 按新文本重算。"""
+    conn.execute("DELETE FROM kp_embedding WHERE kp_id = ?", (kp_id,))
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'vec_kp'"
+    ).fetchone()
+    if exists is None:
+        return
+    if sqlite_vec is not None:
+        try:
+            sqlite_vec.load(conn)
+        except (sqlite3.Error, OSError):
+            return
+    try:
+        conn.execute("DELETE FROM vec_kp WHERE kp_id = ?", (kp_id,))
+    except sqlite3.Error:
+        pass
+
+
 class VectorStore:
     """优先使用 sqlite-vec 虚拟表，扩展不可用时退化为普通表 + 余弦计算。"""
 

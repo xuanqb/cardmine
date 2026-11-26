@@ -1,6 +1,5 @@
 """采集流程：抓取 RSS → 清洗 → AI 切题 → 归并 → 自动推送。"""
 
-import sqlite3
 import threading
 import time
 import uuid
@@ -14,7 +13,7 @@ from ..anki import push_targets
 from ..db import connect, utc_now
 from .clean import clean_post
 from .extract import MAX_INPUT_CHARS, extract_mentions
-from .merge import Merger, ensure_module
+from .merge import Merger, drop_vectors, ensure_module
 from .rss import FeedError, fetch_feed
 
 Progress = Callable[[str, int, int], None]
@@ -381,7 +380,7 @@ def delete_manual_post(post_id: int) -> dict:
                     continue
                 if row["module_id"]:
                     modules.add(int(row["module_id"]))
-                _delete_vectors(conn, kp_id)
+                drop_vectors(conn, kp_id)
                 conn.execute("DELETE FROM knowledge_point WHERE id = ?", (kp_id,))
                 removed += 1
 
@@ -404,15 +403,6 @@ def delete_manual_post(post_id: int) -> dict:
         _run_lock.release()
 
     return {"post_id": post_id, "removed_cards": removed}
-
-
-def _delete_vectors(conn, kp_id: int) -> None:
-    conn.execute("DELETE FROM kp_embedding WHERE kp_id = ?", (kp_id,))
-    try:
-        conn.execute("DELETE FROM vec_kp WHERE kp_id = ?", (kp_id,))
-    except sqlite3.OperationalError:
-        # 未启用 sqlite-vec 时没有 vec_kp 表
-        pass
 
 
 def _auto_push(

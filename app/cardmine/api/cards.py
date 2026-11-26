@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from .. import aliases, groups, review
 from ..anki.client import AnkiClient, AnkiError
+from ..collect.merge import drop_vectors
 from ..db import connect, utc_now
 from ..importer.textfmt import normalize_front
 
@@ -460,12 +461,14 @@ def update_card(card_id: int, payload: CardUpdate) -> dict:
 
         fields: list[str] = []
         params: list = []
+        front_changed = False
 
         if "front_md" in updates:
             front_md = (updates["front_md"] or "").strip()
             if not normalize_front(front_md):
                 raise HTTPException(status_code=400, detail="正面不能为空")
             front_norm = normalize_front(front_md)
+            front_changed = front_norm != current["front_norm"]
             collision = conn.execute(
                 "SELECT id FROM knowledge_point WHERE front_norm = ? "
                 "AND group_id IS ? AND id != ?",
@@ -508,6 +511,8 @@ def update_card(card_id: int, payload: CardUpdate) -> dict:
             conn.execute(
                 f"UPDATE knowledge_point SET {', '.join(fields)} WHERE id = ?", params
             )
+            if front_changed:
+                drop_vectors(conn, card_id)
             if target_group != current["group_id"]:
                 conn.execute(
                     "UPDATE kp_alias SET group_id = ? WHERE owner_kp_id = ?",
