@@ -7,348 +7,411 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark">CM</span>
-      <div>
-        <h1>cardmine</h1>
-        <p>面经闪卡管理台</p>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="主导航">
+      <div class="sidebar-brand">
+        <a href="/" class="brand-link">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="14" height="10" rx="2"/><path d="M7 19h12a2 2 0 0 0 2-2V9"/></svg>
+          </span>
+          <div class="brand-text">
+            <h1>cardmine</h1>
+            <p>面经闪卡工作台</p>
+          </div>
+        </a>
+        <button type="button" class="sidebar-close" id="sidebar-close" aria-label="关闭导航">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
       </div>
-    </div>
-    <nav class="nav">
-      <a href="/">仪表盘</a>
-      <a href="/cards">卡片</a>
-      <a href="/posts">面经</a>
-      <a href="/review">审核</a>
-      <a href="/import">导入</a>
-      <a href="/export">导出</a>
-      <a href="/settings" class="active">设置</a>
-    </nav>
-    <div class="status" id="health">
-      <span class="status-dot" id="health-dot"></span>
-      <span id="health-text">连接中…</span>
-    </div>
-  </header>
 
-  <main class="layout settings-tabs-layout">
-    <div class="settings-tabs" role="tablist" aria-label="设置分区">
-      <button type="button" class="settings-tab active" data-tab="general"
-              role="tab" aria-selected="true" aria-controls="tab-general">设置</button>
-      <button type="button" class="settings-tab" data-tab="sync"
-              role="tab" aria-selected="false" aria-controls="tab-sync">同步</button>
-      <button type="button" class="settings-tab" data-tab="conflicts"
-              role="tab" aria-selected="false" aria-controls="tab-conflicts">
-        同步冲突<span class="tab-count" id="conflict-tab-count" hidden></span>
-      </button>
-      <button type="button" class="settings-tab" data-tab="maintenance"
-              role="tab" aria-selected="false" aria-controls="tab-maintenance">维护</button>
-    </div>
-
-    <section class="tab-panel active" id="tab-general" role="tabpanel">
-      <form class="panel settings-panel" id="settings-form">
-        <h2>设置</h2>
-
-        <fieldset>
-          <legend>AI · Chat</legend>
-          <label class="field">
-            <span>Chat Base URL</span>
-            <input type="text" name="ai_base_url" autocomplete="off" placeholder="https://api.example.com/v1">
-          </label>
-          <label class="field">
-            <span>Chat API Key</span>
-            <input type="password" name="ai_api_key" autocomplete="off">
-          </label>
-          <label class="field">
-            <span>Chat 模型</span>
-            <input type="text" name="ai_chat_model" autocomplete="off">
-          </label>
-        </fieldset>
-
-        <fieldset>
-          <legend>AI · 建议答案</legend>
-          <label class="field">
-            <span>答案 Base URL</span>
-            <input type="text" name="ai_answer_base_url" autocomplete="off" placeholder="留空则复用 Chat Base URL">
-          </label>
-          <label class="field">
-            <span>答案 API Key</span>
-            <input type="password" name="ai_answer_api_key" autocomplete="off" placeholder="留空则复用 Chat API Key">
-          </label>
-          <label class="field">
-            <span>答案模型</span>
-            <input type="text" name="ai_answer_model" autocomplete="off" placeholder="留空则复用 Chat 模型">
-          </label>
-          <label class="field">
-            <span>思考强度</span>
-            <select name="ai_answer_reasoning_effort">
-              <option value="">默认（不传）</option>
-              <option value="low">低（low）</option>
-              <option value="medium">中（medium）</option>
-              <option value="high">高（high）</option>
-              <option value="xhigh">超高（xhigh）</option>
-              <option value="max">最高（max）</option>
-            </select>
-          </label>
-        </fieldset>
-
-        <fieldset>
-          <legend>AI · Embedding</legend>
-          <label class="field">
-            <span>Embedding Base URL</span>
-            <input type="text" name="ai_embedding_base_url" autocomplete="off" placeholder="留空则复用 Chat Base URL">
-          </label>
-          <label class="field">
-            <span>Embedding API Key</span>
-            <input type="password" name="ai_embedding_api_key" autocomplete="off" placeholder="留空则复用 Chat API Key">
-          </label>
-          <div class="field-row">
-            <label class="field">
-              <span>Embedding 模型</span>
-              <input type="text" name="ai_embedding_model" autocomplete="off">
-            </label>
-            <label class="field">
-              <span>向量维度</span>
-              <input type="number" name="ai_embedding_dim" min="1" step="1">
-            </label>
-          </div>
-        </fieldset>
-
-        <fieldset>
-          <legend>候选人背景</legend>
-          <p class="hint">
-            用于自我介绍、职业规划、项目难点等个人经历类答案。不填时仍会生成通用回答框架。
-          </p>
-          <div class="field-row">
-            <label class="field">
-              <span>当前岗位</span>
-              <input type="text" name="candidate_current_role" autocomplete="off" placeholder="如：Java 后端">
-            </label>
-            <label class="field">
-              <span>目标岗位</span>
-              <input type="text" name="candidate_target_role" autocomplete="off" placeholder="如：后端开发">
-            </label>
-            <label class="field">
-              <span>工作年限</span>
-              <input type="number" name="candidate_years" min="0" max="60" step="1" placeholder="如：3">
-            </label>
-          </div>
-          <details class="field-details">
-            <summary>补充说明（选填）</summary>
-            <label class="field">
-              <span>项目素材、量化结果、离职原因、求职动机</span>
-              <textarea name="candidate_notes" rows="5" maxlength="3000"
-                        placeholder="例如：做过订单和支付系统，负责接口设计与稳定性治理；希望长期做后端，进入自研团队。"></textarea>
-            </label>
-          </details>
-          <p class="hint">
-            修改背景后，已生成的 AI 答案不会自动更新，可在卡片对话中要求改写或重新生成。背景会随每次对话请求发送给模型。
-          </p>
-        </fieldset>
-
-        <fieldset>
-          <legend>去重阈值</legend>
-          <div class="field-row">
-            <label class="field">
-              <span>高阈值（直接归并）</span>
-              <input type="number" name="dup_high_threshold" min="0" max="1" step="0.01">
-            </label>
-            <label class="field">
-              <span>低阈值（进入待确认）</span>
-              <input type="number" name="dup_low_threshold" min="0" max="1" step="0.01">
-            </label>
-            <label class="field">
-              <span>快速扫描阈值（跳过 AI）</span>
-              <input type="number" name="dup_vector_threshold" min="0" max="1" step="0.01">
-            </label>
-          </div>
-          <p class="hint">快速扫描阈值只影响审核页的「快速扫描（跳过 AI）」，不影响采集自动合并和普通扫描。</p>
-        </fieldset>
-
-        <fieldset>
-          <legend>Anki</legend>
-          <label class="field">
-            <span>模型名</span>
-            <input type="text" name="anki_model" autocomplete="off">
-          </label>
-          <div class="field-row">
-            <label class="checkbox">
-              <input type="checkbox" name="anki_sync_enabled">
-              <span>推送后自动同步 AnkiWeb</span>
-            </label>
-            <label class="checkbox">
-              <input type="checkbox" name="anki_conflict_guard">
-              <span>全量同步冲突保护</span>
-            </label>
-          </div>
-        </fieldset>
-
-        <div class="actions">
-          <button type="submit" id="save-button">保存设置</button>
-          <span class="save-hint" id="save-hint"></span>
+      <nav class="sidebar-nav">
+        <div class="nav-group">
+          <span class="nav-group-label">工作台</span>
+          <a href="/" class="nav-item" data-label="仪表盘">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>
+            <span class="nav-label">仪表盘</span>
+          </a>
+          <a href="/cards" class="nav-item" data-label="卡片库">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 4.5-9 4.5-9-4.5Z"/><path d="m3 11.5 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></svg>
+            <span class="nav-label">卡片库</span>
+          </a>
+          <a href="/posts" class="nav-item" data-label="面经库">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg>
+            <span class="nav-label">面经库</span>
+          </a>
+          <a href="/review" class="nav-item" data-label="重复审核">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>
+            <span class="nav-label">重复审核</span>
+          </a>
         </div>
-      </form>
-    </section>
 
-    <section class="tab-panel" id="tab-sync" role="tabpanel" hidden>
-      <section class="panel sync-overview">
-        <div class="overview-head">
-          <div class="overview-status">
-            <div class="sync-state">
-              <span class="status-dot" id="anki-dot"></span>
-              <span id="anki-state">检测中…</span>
+        <div class="nav-group">
+          <span class="nav-group-label">工具与系统</span>
+          <a href="/import" class="nav-item" data-label="导入数据">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span class="nav-label">导入数据</span>
+          </a>
+          <a href="/export" class="nav-item" data-label="导出备份">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="nav-label">导出备份</span>
+          </a>
+          <a href="/settings" class="nav-item active" data-label="系统设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/></svg>
+            <span class="nav-label">系统设置</span>
+          </a>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status" id="health">
+          <span class="status-dot" id="health-dot"></span>
+          <span id="health-text">连接中…</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+
+    <div class="app-main">
+      <header class="mobile-bar">
+        <button type="button" class="mobile-menu-btn" id="sidebar-toggle" aria-label="打开导航" aria-expanded="false">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+        </button>
+        <span class="mobile-title">cardmine</span>
+        <span class="mobile-sub">系统设置</span>
+      </header>
+
+      <main class="workspace narrow">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">系统设置</h1>
+            <p class="page-desc">配置模型接口、候选人背景、去重阈值与多目标 Anki 同步策略。</p>
+          </div>
+        </div>
+
+        <div class="settings-tabs" role="tablist" aria-label="设置分区">
+          <button type="button" class="settings-tab active" data-tab="general"
+                  role="tab" aria-selected="true" aria-controls="tab-general">设置</button>
+          <button type="button" class="settings-tab" data-tab="sync"
+                  role="tab" aria-selected="false" aria-controls="tab-sync">同步</button>
+          <button type="button" class="settings-tab" data-tab="conflicts"
+                  role="tab" aria-selected="false" aria-controls="tab-conflicts">
+            同步冲突<span class="tab-count" id="conflict-tab-count" hidden></span>
+          </button>
+          <button type="button" class="settings-tab" data-tab="maintenance"
+                  role="tab" aria-selected="false" aria-controls="tab-maintenance">维护</button>
+        </div>
+
+        <section class="tab-panel active" id="tab-general" role="tabpanel">
+          <form class="panel settings-panel" id="settings-form">
+            <fieldset>
+              <legend>AI · Chat</legend>
+              <label class="field">
+                <span>Chat Base URL</span>
+                <input type="text" name="ai_base_url" autocomplete="off" placeholder="https://api.example.com/v1">
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span>Chat API Key</span>
+                  <input type="password" name="ai_api_key" autocomplete="off">
+                </label>
+                <label class="field">
+                  <span>Chat 模型</span>
+                  <input type="text" name="ai_chat_model" autocomplete="off">
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>AI · 建议答案</legend>
+              <label class="field">
+                <span>答案 Base URL</span>
+                <input type="text" name="ai_answer_base_url" autocomplete="off" placeholder="留空则复用 Chat Base URL">
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span>答案 API Key</span>
+                  <input type="password" name="ai_answer_api_key" autocomplete="off" placeholder="留空则复用 Chat API Key">
+                </label>
+                <label class="field">
+                  <span>答案模型</span>
+                  <input type="text" name="ai_answer_model" autocomplete="off" placeholder="留空则复用 Chat 模型">
+                </label>
+                <label class="field">
+                  <span>思考强度</span>
+                  <select name="ai_answer_reasoning_effort">
+                    <option value="">默认（不传）</option>
+                    <option value="low">低（low）</option>
+                    <option value="medium">中（medium）</option>
+                    <option value="high">高（high）</option>
+                    <option value="xhigh">超高（xhigh）</option>
+                    <option value="max">最高（max）</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>AI · Embedding</legend>
+              <label class="field">
+                <span>Embedding Base URL</span>
+                <input type="text" name="ai_embedding_base_url" autocomplete="off" placeholder="留空则复用 Chat Base URL">
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span>Embedding API Key</span>
+                  <input type="password" name="ai_embedding_api_key" autocomplete="off" placeholder="留空则复用 Chat API Key">
+                </label>
+                <label class="field">
+                  <span>Embedding 模型</span>
+                  <input type="text" name="ai_embedding_model" autocomplete="off">
+                </label>
+                <label class="field">
+                  <span>向量维度</span>
+                  <input type="number" name="ai_embedding_dim" min="1" step="1">
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>候选人背景</legend>
+              <p class="hint">
+                用于自我介绍、职业规划、项目难点等个人经历类答案。不填时仍会生成通用回答框架。
+              </p>
+              <div class="field-row">
+                <label class="field">
+                  <span>当前岗位</span>
+                  <input type="text" name="candidate_current_role" autocomplete="off" placeholder="如：Java 后端">
+                </label>
+                <label class="field">
+                  <span>目标岗位</span>
+                  <input type="text" name="candidate_target_role" autocomplete="off" placeholder="如：后端开发">
+                </label>
+                <label class="field">
+                  <span>工作年限</span>
+                  <input type="number" name="candidate_years" min="0" max="60" step="1" placeholder="如：3">
+                </label>
+              </div>
+              <details class="field-details">
+                <summary>补充说明（选填）</summary>
+                <label class="field">
+                  <span>项目素材、量化结果、离职原因、求职动机</span>
+                  <textarea name="candidate_notes" rows="5" maxlength="3000"
+                            placeholder="例如：做过订单和支付系统，负责接口设计与稳定性治理；希望长期做后端，进入自研团队。"></textarea>
+                </label>
+              </details>
+              <p class="hint">
+                修改背景后，已生成的 AI 答案不会自动更新，可在卡片对话中要求改写或重新生成。背景会随每次对话请求发送给模型。
+              </p>
+            </fieldset>
+
+            <fieldset>
+              <legend>去重阈值</legend>
+              <div class="field-row">
+                <label class="field">
+                  <span>高阈值（直接归并）</span>
+                  <input type="number" name="dup_high_threshold" min="0" max="1" step="0.01">
+                </label>
+                <label class="field">
+                  <span>低阈值（进入待确认）</span>
+                  <input type="number" name="dup_low_threshold" min="0" max="1" step="0.01">
+                </label>
+                <label class="field">
+                  <span>快速扫描阈值（跳过 AI）</span>
+                  <input type="number" name="dup_vector_threshold" min="0" max="1" step="0.01">
+                </label>
+              </div>
+              <p class="hint">快速扫描阈值只影响审核页的「快速扫描（跳过 AI）」，不影响采集自动合并和普通扫描。</p>
+            </fieldset>
+
+            <fieldset>
+              <legend>Anki</legend>
+              <label class="field">
+                <span>模型名</span>
+                <input type="text" name="anki_model" autocomplete="off">
+              </label>
+              <div class="field-row">
+                <label class="checkbox">
+                  <input type="checkbox" name="anki_sync_enabled">
+                  <span>推送后自动同步 AnkiWeb</span>
+                </label>
+                <label class="checkbox">
+                  <input type="checkbox" name="anki_conflict_guard">
+                  <span>全量同步冲突保护</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <div class="actions">
+              <button type="submit" id="save-button">保存设置</button>
+              <span class="save-hint" id="save-hint"></span>
             </div>
-            <p class="overview-sub" id="anki-url">—</p>
-          </div>
-          <div class="overview-actions">
-            <button type="button" class="ghost" id="anki-check">检测连接</button>
-            <button type="button" class="ghost" id="anki-takeover">接管匹配</button>
-            <button type="button" class="ghost" id="anki-push">全部推送</button>
-            <button type="button" class="ghost" id="anki-pull">全部拉取</button>
-            <button type="button" id="anki-sync">全部同步</button>
-          </div>
-        </div>
-        <div class="metric-grid">
-          <div class="metric"><span>待推送</span><strong id="anki-pending">—</strong></div>
-          <div class="metric"><span>已关联笔记</span><strong id="anki-matched">—</strong></div>
-          <div class="metric"><span>待处理冲突</span><strong id="anki-conflicts">—</strong></div>
-          <div class="metric"><span>最近推送</span><strong id="anki-last-push">—</strong></div>
-        </div>
-        <details class="overview-meta">
-          <summary>运行信息</summary>
-          <dl class="status-list">
-            <div><dt>应用版本</dt><dd id="app-version">—</dd></div>
-            <div><dt>数据库</dt><dd id="db-status">—</dd></div>
-            <div><dt>Schema 版本</dt><dd id="schema-version">—</dd></div>
-            <div><dt>最近备份</dt><dd id="anki-backup">—</dd></div>
-          </dl>
-        </details>
-        <div class="progress-wrap" id="anki-progress" hidden>
-          <div class="progress-head">
-            <span id="anki-phase">—</span>
-            <span id="anki-count"></span>
-          </div>
-          <div class="progress-bar">
-            <div class="progress-fill" id="anki-fill"></div>
-          </div>
-        </div>
-        <div class="alert" id="anki-alert" hidden></div>
-        <div class="report" id="anki-report" hidden></div>
-      </section>
-
-      <section class="panel targets-panel">
-        <div class="panel-head">
-          <div>
-            <h2>同步目标</h2>
-            <p class="hint">
-              每个目标是一套独立的 AnkiWeb 账号与容器。目标之间对等双向，一个组可以同时映射到多个目标。
-            </p>
-          </div>
-          <button type="button" class="ghost" id="target-new">新建目标</button>
-        </div>
-        <form class="target-form" id="target-form" hidden>
-          <label class="field">
-            <span>名称</span>
-            <input type="text" name="name" maxlength="60" required>
-          </label>
-          <label class="field">
-            <span>AnkiConnect 地址</span>
-            <input type="text" name="base_url" placeholder="http://anki-connect-friend:8765/api" required>
-          </label>
-          <label class="checkbox">
-            <input type="checkbox" name="enabled" checked>
-            <span>启用</span>
-          </label>
-          <div class="sync-actions">
-            <button type="submit" id="target-save">保存目标</button>
-            <button type="button" class="ghost" id="target-cancel">取消</button>
-            <input type="hidden" name="target_id">
-          </div>
-        </form>
-        <div class="target-list" id="target-list">
-          <p class="hint">加载中…</p>
-        </div>
-      </section>
-
-      <section class="panel matrix-panel">
-        <div class="panel-head">
-          <div>
-            <h2>组映射</h2>
-            <p class="hint">
-              勾选后保存。未映射的组不会同步到任何目标，组内卡片会跟随组一起切换目标。
-            </p>
-          </div>
-          <div class="matrix-actions">
-            <button type="button" id="matrix-save">保存映射</button>
-            <span class="save-hint" id="matrix-hint"></span>
-          </div>
-        </div>
-        <div class="group-matrix" id="group-matrix"></div>
-      </section>
-    </section>
-
-    <section class="tab-panel" id="tab-conflicts" role="tabpanel" hidden>
-      <section class="panel conflict-panel">
-        <div class="panel-head">
-          <div>
-            <h2>同步冲突</h2>
-            <p class="hint">
-              系统与某个目标修改了同一张卡片时不会自动覆盖。按整张卡片选择保留一侧，解决后会自动分发到所有目标。
-            </p>
-          </div>
-        </div>
-        <div class="conflict-list" id="conflict-list">
-          <p class="hint">加载中…</p>
-        </div>
-        <div class="conflict-resolved" id="conflict-resolved" hidden>
-          <h3>最近已解决</h3>
-          <div class="conflict-list" id="conflict-resolved-list"></div>
-        </div>
-      </section>
-    </section>
-
-    <section class="tab-panel" id="tab-maintenance" role="tabpanel" hidden>
-      <div class="tab-grid">
-        <section class="panel audit-panel">
-          <h2>Anki 体检</h2>
-          <p class="hint">
-            扫描 cardmine 牌组，查看 Anki 有但系统没有的孤儿 note，以及系统有但 Anki 已删除的关联。
-          </p>
-          <div class="sync-actions">
-            <button type="button" class="ghost" id="anki-audit">开始体检</button>
-          </div>
-          <div class="audit-result" id="audit-result" hidden></div>
+          </form>
         </section>
 
-        <section class="panel backup-panel">
-          <h2>数据备份</h2>
-          <p class="hint">
-            下载 SQLite 一致性快照与媒体清单。媒体清单包含文件名、大小、哈希与本地是否存在。
-          </p>
-          <div class="sync-actions">
-            <a class="button-link" href="/api/export/backup/db">下载 SQLite</a>
-            <a class="button-link" href="/api/export/backup/media">媒体清单</a>
-          </div>
+        <section class="tab-panel" id="tab-sync" role="tabpanel" hidden>
+          <section class="panel sync-overview">
+            <div class="overview-head">
+              <div class="overview-status">
+                <div class="sync-state">
+                  <span class="status-dot" id="anki-dot"></span>
+                  <span id="anki-state">检测中…</span>
+                </div>
+                <p class="overview-sub" id="anki-url">—</p>
+              </div>
+              <div class="overview-actions">
+                <button type="button" class="ghost" id="anki-check">检测连接</button>
+                <button type="button" class="ghost" id="anki-takeover">接管匹配</button>
+                <button type="button" class="ghost" id="anki-push">全部推送</button>
+                <button type="button" class="ghost" id="anki-pull">全部拉取</button>
+                <button type="button" id="anki-sync">全部同步</button>
+              </div>
+            </div>
+            <div class="metric-grid">
+              <div class="metric"><span>待推送</span><strong id="anki-pending">—</strong></div>
+              <div class="metric"><span>已关联笔记</span><strong id="anki-matched">—</strong></div>
+              <div class="metric"><span>待处理冲突</span><strong id="anki-conflicts">—</strong></div>
+              <div class="metric"><span>最近推送</span><strong id="anki-last-push">—</strong></div>
+            </div>
+            <details class="overview-meta">
+              <summary>运行信息</summary>
+              <dl class="status-list">
+                <div><dt>应用版本</dt><dd id="app-version">—</dd></div>
+                <div><dt>数据库</dt><dd id="db-status">—</dd></div>
+                <div><dt>Schema 版本</dt><dd id="schema-version">—</dd></div>
+                <div><dt>最近备份</dt><dd id="anki-backup">—</dd></div>
+              </dl>
+            </details>
+            <div class="progress-wrap" id="anki-progress" hidden>
+              <div class="progress-head">
+                <span id="anki-phase">—</span>
+                <span id="anki-count"></span>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="anki-fill"></div>
+              </div>
+            </div>
+            <div class="alert" id="anki-alert" hidden></div>
+            <div class="report" id="anki-report" hidden></div>
+          </section>
+
+          <section class="panel targets-panel">
+            <div class="panel-head">
+              <div>
+                <h2>同步目标</h2>
+                <p class="hint">
+                  每个目标是一套独立的 AnkiWeb 账号与容器。目标之间对等双向，一个组可以同时映射到多个目标。
+                </p>
+              </div>
+              <button type="button" class="ghost" id="target-new">新建目标</button>
+            </div>
+            <form class="target-form" id="target-form" hidden>
+              <label class="field">
+                <span>名称</span>
+                <input type="text" name="name" maxlength="60" required>
+              </label>
+              <label class="field">
+                <span>AnkiConnect 地址</span>
+                <input type="text" name="base_url" placeholder="http://anki-connect-friend:8765/api" required>
+              </label>
+              <label class="checkbox">
+                <input type="checkbox" name="enabled" checked>
+                <span>启用</span>
+              </label>
+              <div class="sync-actions">
+                <button type="submit" id="target-save">保存目标</button>
+                <button type="button" class="ghost" id="target-cancel">取消</button>
+                <input type="hidden" name="target_id">
+              </div>
+            </form>
+            <div class="target-list" id="target-list">
+              <p class="hint">加载中…</p>
+            </div>
+          </section>
+
+          <section class="panel matrix-panel">
+            <div class="panel-head">
+              <div>
+                <h2>组映射</h2>
+                <p class="hint">
+                  勾选后保存。未映射的组不会同步到任何目标，组内卡片会跟随组一起切换目标。
+                </p>
+              </div>
+              <div class="matrix-actions">
+                <button type="button" id="matrix-save">保存映射</button>
+                <span class="save-hint" id="matrix-hint"></span>
+              </div>
+            </div>
+            <div class="group-matrix" id="group-matrix"></div>
+          </section>
         </section>
 
-        <section class="panel media-panel">
-          <h2>媒体清理</h2>
-          <p class="hint">
-            扫描媒体目录中没有被卡片、冲突、别名、帖子或提及引用的文件。删除不可恢复。
-          </p>
-          <div class="sync-actions">
-            <button type="button" class="ghost" id="media-scan">扫描无引用媒体</button>
-            <button type="button" class="ghost" id="media-cleanup" hidden>
-              删除
-            </button>
-          </div>
-          <div class="audit-result" id="media-result" hidden></div>
+        <section class="tab-panel" id="tab-conflicts" role="tabpanel" hidden>
+          <section class="panel conflict-panel">
+            <div class="panel-head">
+              <div>
+                <h2>同步冲突</h2>
+                <p class="hint">
+                  系统与某个目标修改了同一张卡片时不会自动覆盖。按整张卡片选择保留一侧，解决后会自动分发到所有目标。
+                </p>
+              </div>
+            </div>
+            <div class="conflict-list" id="conflict-list">
+              <p class="hint">加载中…</p>
+            </div>
+            <div class="conflict-resolved" id="conflict-resolved" hidden>
+              <h3>最近已解决</h3>
+              <div class="conflict-list" id="conflict-resolved-list"></div>
+            </div>
+          </section>
         </section>
-      </div>
-    </section>
-  </main>
+
+        <section class="tab-panel" id="tab-maintenance" role="tabpanel" hidden>
+          <div class="tab-grid">
+            <section class="panel audit-panel">
+              <h2>Anki 体检</h2>
+              <p class="hint">
+                扫描 cardmine 牌组，查看 Anki 有但系统没有的孤儿 note，以及系统有但 Anki 已删除的关联。
+              </p>
+              <div class="sync-actions">
+                <button type="button" class="ghost" id="anki-audit">开始体检</button>
+              </div>
+              <div class="audit-result" id="audit-result" hidden></div>
+            </section>
+
+            <section class="panel backup-panel">
+              <h2>数据备份</h2>
+              <p class="hint">
+                下载 SQLite 一致性快照与媒体清单。媒体清单包含文件名、大小、哈希与本地是否存在。
+              </p>
+              <div class="sync-actions">
+                <a class="button-link" href="/api/export/backup/db">下载 SQLite</a>
+                <a class="button-link" href="/api/export/backup/media">媒体清单</a>
+              </div>
+            </section>
+
+            <section class="panel media-panel">
+              <h2>媒体清理</h2>
+              <p class="hint">
+                扫描媒体目录中没有被卡片、冲突、别名、帖子或提及引用的文件。删除不可恢复。
+              </p>
+              <div class="sync-actions">
+                <button type="button" class="ghost" id="media-scan">扫描无引用媒体</button>
+                <button type="button" class="ghost" id="media-cleanup" hidden>
+                  删除
+                </button>
+              </div>
+              <div class="audit-result" id="media-result" hidden></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
 
   <div class="toast" id="toast" hidden></div>
 
+  <script src="/static/common.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
